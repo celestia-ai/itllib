@@ -17,15 +17,10 @@ import time
 from .piles import BucketOperations, PileOperations
 from .clusters import DatabaseOperations, ClusterOperations
 
-class Namespace: pass
 
-def dbg(*s):
-    with open('debug.log', 'a') as outp:
-        for x in s:
-            outp.write(str(x))
-            outp.write(' ')
-        outp.write('\n')
-        outp.flush()
+class Namespace:
+    pass
+
 
 def _get_expected_arguments(func):
     signature = inspect.signature(func)
@@ -47,17 +42,18 @@ def _get_argument_type_hints(func):
 def collect_secrets(secrets_dir):
     bucket_keys = {}
     result = {}
-    for path in glob(f'{secrets_dir}/*.json'):
+    for path in glob(f"{secrets_dir}/*.json"):
         with open(path) as inp:
             secret_data = json.load(inp)
-        
-        secret_name = secret_data['metadata']['name']
+
+        secret_name = secret_data["metadata"]["name"]
         if secret_name in bucket_keys:
             raise ValueError(f"Duplicate key name: {secret_name}")
-        
+
         result[secret_name] = secret_data
-    
+
     return result
+
 
 class Itl:
     def __init__(self, secrets_dir=None) -> None:
@@ -78,7 +74,7 @@ class Itl:
 
         # Old stuff, to be removed
         self._stop = False
-        
+
         # Resources
         self._streams = {}
         self._buckets = {}
@@ -100,13 +96,13 @@ class Itl:
             self._secrets = collect_secrets(secrets_dir)
         else:
             self._secrets = {}
-    
+
     def set_streams(self, streams_data):
         """
         Update the internal stream mapping from a source. The source can either be:
         - A dictionary of streams.
         - A list of dictionaries, each containing 'name' and 'source' keys.
-        
+
         Args:
         - source (Union[Dict[str, str], List[Dict[str, str]]]): The source data.
 
@@ -116,67 +112,67 @@ class Itl:
         if isinstance(streams_data, dict):
             streams_dict = streams_data
         elif isinstance(streams_data, list):
-            streams_dict = { x['name']: x['source'] for x in streams_data }
+            streams_dict = {x["name"]: x["source"] for x in streams_data}
         else:
             raise ValueError(f"Unsupported streams_data type: {type(streams_data)}")
-        
+
         # Thread-safe update
         updated_streams = self._streams.copy()
         updated_streams.update(streams_dict)
         self._streams = updated_streams
-    
+
     def apply_config(self, config, secrets):
         self.apply_secrets(secrets)
-        self.update_streams(config.get('streams', []))
-        self.update_buckets(config.get('buckets', []))
-        self.update_piles(config.get('piles', []))
-        self.update_databases(config.get('databases', []))
-        self.update_clusters(config.get('clusters', []))
-    
+        self.update_streams(config.get("streams", []))
+        self.update_buckets(config.get("buckets", []))
+        self.update_piles(config.get("piles", []))
+        self.update_databases(config.get("databases", []))
+        self.update_clusters(config.get("clusters", []))
+
     def apply_secrets(self, secrets_dir):
         # TODO: update affected resources
         self._secrets.update(collect_secrets(secrets_dir))
 
     def update_streams(self, streams_data):
         self.set_streams(streams_data)
-    
+
     def update_buckets(self, buckets):
         for bucket in buckets:
-            name = bucket['name']
-            key = bucket['secret']
-            self._buckets[name] = BucketOperations(self._secrets[key]['spec'])
-    
+            name = bucket["name"]
+            key = bucket["secret"]
+            self._buckets[name] = BucketOperations(self._secrets[key]["spec"])
+
     def update_piles(self, piles):
         for pile in piles:
-            name = pile['name']
-            bucket = pile['bucket']
-            prefix = pile.get('prefix', None)
-            pattern = pile.get('pattern', None)
+            name = pile["name"]
+            bucket = pile["bucket"]
+            prefix = pile.get("prefix", None)
+            pattern = pile.get("pattern", None)
             bucket = self._buckets[bucket]
             self._piles[name] = PileOperations(bucket, prefix=prefix, pattern=pattern)
-    
+
     def update_databases(self, databases):
         for database in databases:
-            name = database['name']
-            secret = database['secret']
+            name = database["name"]
+            secret = database["secret"]
             self._databases[name] = DatabaseOperations(self._secrets[secret])
 
     def update_clusters(self, clusters):
         for config in clusters:
-            name = config['name']
-            database = config['database']
-            stream = config.get('eventStream', None)
+            name = config["name"]
+            database = config["database"]
+            stream = config.get("eventStream", None)
             self._clusters[name] = ClusterOperations(self._databases[database], stream)
-    
+
     def object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
             raise ValueError("Exactly one of key or event must be provided")
         if key != None and notification != None:
             raise ValueError("Only one of key or event can be provided")
-        
+
         if notification != None:
-            key = notification['key']
-        
+            key = notification["key"]
+
         pile_ops = self._piles[pile]
 
         if attach_prefix:
@@ -184,22 +180,24 @@ class Itl:
 
         return pile_ops.get(key)
 
-    def object_upload(self, pile, key, file_descriptor, metadata={}, attach_prefix=False):
+    def object_upload(
+        self, pile, key, file_descriptor, metadata={}, attach_prefix=False
+    ):
         pile_ops = self._piles[pile]
 
         if attach_prefix:
             key = f"{pile_ops.prefix or ''}{key}"
 
         return pile_ops.put(key, file_descriptor, metadata)
-    
+
     def object_delete(self, pile, key=None, attach_prefix=False):
         pile_ops = self._piles[pile]
 
         if attach_prefix:
             key = f"{pile_ops.prefix or ''}{key}"
-        
+
         return pile_ops.delete(key)
-    
+
     async def resource_create(self, cluster, data):
         return await self._clusters[cluster].create_resource(data)
         # Remember to update the underlying functions
@@ -207,24 +205,28 @@ class Itl:
 
     async def resource_read(self, cluster, name):
         return await self._clusters[cluster].read_resource(name)
-        
+
     async def resource_patch(self, cluster, data):
         return await self._clusters[cluster].patch_resource(data)
 
     async def resource_update(self, cluster, data):
         return await self._clusters[cluster].update_resource(data)
-    
+
     async def resource_apply(self, cluster, data):
         return await self._clusters[cluster].apply_resource(data)
 
     async def resource_delete(self, cluster, group, version, kind, name):
         return await self._clusters[cluster].delete_resource(group, version, kind, name)
 
-    def resource_controller(self, cluster, group, version, kind, name=None, validate=False):
+    def resource_controller(
+        self, cluster, group, version, kind, name=None, validate=False
+    ):
         cluster_obj = self._clusters[cluster]
-        return cluster_obj.control_resource(group, version, kind, name, validate=validate)
-            # yield controller
-    
+        return cluster_obj.control_resource(
+            group, version, kind, name, validate=validate
+        )
+        # yield controller
+
     def get_stream(self, identifier):
         if identifier in self._streams:
             return self._streams[identifier]
@@ -235,7 +237,7 @@ class Itl:
         """
         Update the downstream tasks based on the provided streams. If a downstream task for a
         given identifier already exists, it is skipped. If the looper isn't initialized,
-        a task to attach the downstream is created. If the looper is initialized, a new downstream task 
+        a task to attach the downstream is created. If the looper is initialized, a new downstream task
         is scheduled to run asynchronously.
 
         Args:
@@ -248,19 +250,21 @@ class Itl:
             # Skip creating a task if it already exists
             if identifier in self._downstream_tasks:
                 continue
-            
+
             # Check if the Itl is already running
             if not self._looper:
                 task = self._attach_stream, (identifier,)
                 self._downstream_tasks[identifier] = task
             else:
                 stream = self.get_stream(identifier)
-                self._looper.call_soon_threadsafe(self._schedule_downstream_task, identifier)
-    
+                self._looper.call_soon_threadsafe(
+                    self._schedule_downstream_task, identifier
+                )
+
     def _schedule_downstream_task(self, identifier):
         """
         Schedules a downstream task for the given identifier if it doesn't already exist.
-        
+
         Args:
         - identifier (str): Identifier for the stream.
 
@@ -269,7 +273,7 @@ class Itl:
         """
         if identifier in self._downstream_tasks:
             return
-        
+
         task = self._attach_stream(identifier)
         asyncio.create_task(task)
         self._downstream_tasks[identifier] = task
@@ -278,7 +282,7 @@ class Itl:
         """
         Update the upstream tasks based on the provided streams. If an upstream task for a
         given identifier already exists, it is skipped. If the looper isn't initialized,
-        a task to attach the downstream is created. If the looper is initialized, a new downstream task 
+        a task to attach the downstream is created. If the looper is initialized, a new downstream task
         is scheduled to run asynchronously.
 
         Args:
@@ -291,18 +295,20 @@ class Itl:
             # Skip creating a task if it already exists
             if identifier in self._upstream_tasks:
                 continue
-            
+
             # Check if the Itl is already running
             if not self._looper:
                 task = self._attach_stream, (identifier,)
                 self._upstream_tasks[identifier] = task
             else:
-                self._looper.call_soon_threadsafe(self._schedule_upstream_task, identifier)
-    
+                self._looper.call_soon_threadsafe(
+                    self._schedule_upstream_task, identifier
+                )
+
     def _schedule_upstream_task(self, identifier):
         """
         Schedules an upstream task for the given identifier if it doesn't already exist.
-        
+
         Args:
         - identifier (str): Identifier for the stream.
 
@@ -311,11 +317,11 @@ class Itl:
         """
         if identifier in self._upstream_tasks:
             return
-        
+
         task = self._attach_stream(identifier)
         asyncio.create_task(task)
         self._upstream_tasks[identifier] = task
-    
+
     def ondata(self, stream):
         if stream not in self._upstreams:
             self.upstreams([stream])
@@ -331,7 +337,7 @@ class Itl:
             self._trigger_handlers.setdefault(stream, []).append(func)
 
         return decorator
-    
+
     def controller(self, cluster, group=None, version=None, kind=None, validate=False):
         stream = self._clusters[cluster].stream
         database = self._clusters[cluster].database.name
@@ -341,27 +347,27 @@ class Itl:
             async def controller_wrapper(*args, **event):
                 operations = self.resource_controller(
                     cluster,
-                    event['group'],
-                    event['version'],
-                    event['kind'],
-                    validate=validate
+                    event["group"],
+                    event["version"],
+                    event["kind"],
+                    validate=validate,
                 )
                 async with operations:
                     self._requires_start[func] = True
                     await func(operations)
-                    print('done')
+                    print("done")
 
             @self.ondata(stream)
             async def event_handler(*args, **event):
-                if event['database'] != database:
+                if event["database"] != database:
                     return
-                if group != None and event['group'] != group:
+                if group != None and event["group"] != group:
                     return
-                if version != None and event['version'] != version:
+                if version != None and event["version"] != version:
                     return
-                if kind != None and event['kind'] != kind:
+                if kind != None and event["kind"] != kind:
                     return
-                
+
                 requires_start = self._requires_start.get(func, True)
                 self._requires_start[func] = False
                 if requires_start:
@@ -369,16 +375,16 @@ class Itl:
 
             self._controllers.setdefault(cluster, []).append(func)
             return func
+
         return decorator
-    
+
     def onstart(self, func):
         self._main = func
         return func
-    
+
     def onconnect(self, func):
         self._post_connect = func
         return func
-
 
     async def handle_request(self, scope):
         # TODO: This isn't used right now. Update it so accepts a parameter dictionary directly.
@@ -432,11 +438,11 @@ class Itl:
             for key, value in extracted_params.items():
                 if key in type_hints:
                     extracted_params[key] = type_hints[key](value)
-            
+
             for key, value in scope.get("data", {}).items():
                 if key in type_hints:
-                    scope['data'][key] = type_hints[key](value)
-            
+                    scope["data"][key] = type_hints[key](value)
+
             scope["path_params"] = extracted_params
 
             # Check if the arguments match the function signature
@@ -449,7 +455,7 @@ class Itl:
             return
 
         print("No match for scope", scope)
-    
+
     async def _process_upstream_messages(self):
         while not self._stop:
             # TODO: check all incoming streams for messages
@@ -460,7 +466,7 @@ class Itl:
                     await self._messages.get()
                 except asyncio.CancelledError:
                     pass
-            
+
             if self._stop:
                 break
 
@@ -469,16 +475,15 @@ class Itl:
                 await self._messages.get()
             except asyncio.CancelledError:
                 pass
-    
+
         for queue in self._downstream_queues.values():
             queue.put_nowait(None)
-        
+
         for stream in self._downstreams.values():
             await stream.close()
-        
+
         for stream in self._upstreams.values():
             await stream.close()
-
 
     async def stream_send(self, key, message, attach_ok=True):
         if attach_ok:
@@ -489,38 +494,39 @@ class Itl:
                 self.downstreams([key])
 
         if self._looper:
-            self._looper.call_soon_threadsafe(self._downstream_queues[key].put_nowait, message)
+            self._looper.call_soon_threadsafe(
+                self._downstream_queues[key].put_nowait, message
+            )
         else:
             task = self._downstream_queues[key].put, (message,)
             self._message_tasks.append(task)
-    
+
     def _requeue(self, identifier, message):
         if message == None:
             return
-        
+
         old_queue = self._downstream_queues[identifier]
         new_queue = asyncio.Queue()
         if message != None:
             new_queue.put_nowait(message)
         while not old_queue.empty():
             new_queue.put_nowait(old_queue.get_nowait())
-        
+
         self._downstream_tasks[identifier] = new_queue
-    
+
     async def _attach_stream(self, identifier):
         if identifier in self._started_streams:
-            dbg('skipping stream', identifier)
             return
-        dbg('starting stream', identifier)
-        
+
         self._started_streams.add(identifier)
         state = Namespace()
         state.message = None
 
         async def send_message():
-            dbg('sending on', identifier)
-            state.message = state.message or await self._downstream_queues[identifier].get()
-            
+            state.message = (
+                state.message or await self._downstream_queues[identifier].get()
+            )
+
             if self._stop:
                 self._requeue(identifier, state.message)
                 return False
@@ -533,20 +539,18 @@ class Itl:
                 return False
             except websockets.exceptions.ConnectionClosedOK:
                 return False
-            
+
             state.message = None
             return True
-            
-        
+
         async def recv_message():
-            dbg('receiving on', identifier)
             try:
                 serialized_data = await self._streams[identifier].recv()
             except websockets.exceptions.ConnectionClosedError:
                 return False
             except websockets.exceptions.ConnectionClosedOK:
                 return False
-            
+
             # If there are no data handlers for this identifier, skip processing
             if identifier not in self._data_handlers:
                 return True
@@ -567,9 +571,9 @@ class Itl:
                     asyncio.create_task(handler(*args, **kwargs))
                 else:
                     handler(*args, **kwargs)
-            
+
             return True
-        
+
         backoff_time = 0
         tasks = None
 
@@ -578,7 +582,7 @@ class Itl:
                 if not tasks:
                     tasks = [
                         asyncio.create_task(asyncio.sleep(0)),
-                        asyncio.create_task(asyncio.sleep(0))
+                        asyncio.create_task(asyncio.sleep(0)),
                     ]
 
                 ws_url = self.get_stream(identifier)
@@ -587,47 +591,41 @@ class Itl:
                     self._streams[identifier] = websocket
 
                     while True:
-                        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                        done, pending = await asyncio.wait(
+                            tasks, return_when=asyncio.FIRST_COMPLETED
+                        )
                         if self._stop:
                             return
-                        
+
                         connection_closed = False
 
-                        dbg('done:', type(done))
-
                         for completed in done:
-                            dbg(completed)
-
                             if completed.result() == False:
-                                dbg('connection closed??')
                                 connection_closed = True
-                            # dbg('succeeded:', completed.result())
 
                             if completed == tasks[0]:
                                 tasks[0] = asyncio.create_task(send_message())
                             elif completed == tasks[1]:
                                 tasks[1] = asyncio.create_task(recv_message())
-                        
+
                         if connection_closed:
-                            dbg('connection closed')
                             break
-                    
+
             except websockets.exceptions.ConnectionClosedOK:
                 pass
             except websockets.exceptions.ConnectionClosedError:
                 pass
-                
+
             if self._stop:
-                print('stopping, completed')
+                print("stopping, completed")
                 return
 
             # Backoff before reconnecting
             backoff_time = await self._exponential_backoff(backoff_time)
-        
-    
+
     async def _exponential_backoff(self, current_backoff_time):
         """Sleeps the process for an exponential backoff time."""
-        await asyncio.sleep(2 ** current_backoff_time)
+        await asyncio.sleep(2**current_backoff_time)
         # Return the next backoff time, capped at 2**7 seconds
         return min(current_backoff_time + 1, 7)
 
@@ -644,30 +642,29 @@ class Itl:
 
         if self._post_connect:
             await self._post_connect()
-    
+
     def start_thread(self):
         self._thread = threading.Thread(target=self._run_in_thread)
         self._thread.start()
-    
+
     def join(self):
         self._thread.join()
-    
+
     def _run_in_thread(self):
         self._looper = looper = asyncio.new_event_loop()
         asyncio.set_event_loop(looper)
         asyncio.get_event_loop().set_debug(True)
         looper.run_until_complete(main(self))
         looper.close()
-    
+
     def stop_thread(self):
         self.stop_itl()
-    
+
     def stop_itl(self):
         self._stop = True
         self._looper.call_soon_threadsafe(self._messages.put_nowait, None)
         self._looper = None
-    
-    
+
 
 async def main(itl, args=None):
     process_messages_task = itl._process_upstream_messages()
@@ -675,11 +672,8 @@ async def main(itl, args=None):
     async def start_routine():
         itl._looper = asyncio.get_event_loop()
         await itl._connect()
-        
+
         if itl._main:
             await itl._main()
 
-    await asyncio.gather(
-        process_messages_task,
-        start_routine())
-
+    await asyncio.gather(process_messages_task, start_routine())
