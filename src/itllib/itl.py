@@ -1,21 +1,17 @@
 import asyncio
 from collections import defaultdict
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 import inspect
 import threading
 import typing
 from glob import glob
 
-import sys
-import importlib
-import os
 import websockets
 import json
-import time
+import aiohttp
 
 from .piles import BucketOperations, PileOperations
 from .clusters import DatabaseOperations, ClusterOperations
+from .loops import LoopOperations, StreamOperations
 
 
 class Namespace:
@@ -81,6 +77,7 @@ class Itl:
         self._piles = {}
         self._databases = {}
         self._clusters: dict[str, ClusterOperations] = {}
+        self._loops: dict[str, LoopOperations] = {}
 
         # Stream interactions
         self._downstreams = {}
@@ -88,7 +85,6 @@ class Itl:
         self._upstream_tasks = {}
         self._downstream_tasks = {}
         self._downstream_queues = defaultdict(asyncio.Queue)
-        self._open_connections = {}
         self._connection_tasks = {}
         self._started_streams = set()
 
@@ -97,32 +93,9 @@ class Itl:
         else:
             self._secrets = {}
 
-    def set_streams(self, streams_data):
-        """
-        Update the internal stream mapping from a source. The source can either be:
-        - A dictionary of streams.
-        - A list of dictionaries, each containing 'name' and 'source' keys.
-
-        Args:
-        - source (Union[Dict[str, str], List[Dict[str, str]]]): The source data.
-
-        Returns:
-        None
-        """
-        if isinstance(streams_data, dict):
-            streams_dict = streams_data
-        elif isinstance(streams_data, list):
-            streams_dict = {x["name"]: x["source"] for x in streams_data}
-        else:
-            raise ValueError(f"Unsupported streams_data type: {type(streams_data)}")
-
-        # Thread-safe update
-        updated_streams = self._streams.copy()
-        updated_streams.update(streams_dict)
-        self._streams = updated_streams
-
     def apply_config(self, config, secrets):
         self.apply_secrets(secrets)
+        self.update_loops(config.get("loops", []))
         self.update_streams(config.get("streams", []))
         self.update_buckets(config.get("buckets", []))
         self.update_piles(config.get("piles", []))
@@ -133,8 +106,40 @@ class Itl:
         # TODO: update affected resources
         self._secrets.update(collect_secrets(secrets_dir))
 
-    def update_streams(self, streams_data):
-        self.set_streams(streams_data)
+        for secretName, secret in self._secrets.items():
+            if secret["apiVersion"] != "itllib/v1":
+                continue
+            if "spec" not in secret:
+                continue
+
+            kind = secret["kind"]
+            spec = secret["spec"]
+
+            if kind == "LoopSecret":
+                loopName = secret["metadata"]["name"]
+                self._loops[loopName] = LoopOperations(spec)
+            elif kind == "DatabaseSecret":
+                clusterName = secret["metadata"]["name"]
+                self._databases[clusterName] = DatabaseOperations(secret)
+            elif kind == "BucketSecret":
+                bucketName = secret["metadata"]["name"]
+                self._buckets[bucketName] = BucketOperations(spec)
+
+    def update_loops(self, loops):
+        for loop in loops:
+            name = loop["name"]
+            secret = loop["secret"]
+            self._loops[name] = LoopOperations(self._secrets[secret]["spec"])
+
+    def update_streams(self, streams):
+        for stream in streams:
+            name = stream["name"]
+            loop = stream["loop"]
+            key = stream.get("key", name)
+            group = stream.get("group", None)
+            self._streams[name] = StreamOperations(
+                self._loops[loop], key=key, group=group
+            )
 
     def update_buckets(self, buckets):
         for bucket in buckets:
@@ -148,8 +153,9 @@ class Itl:
             bucket = pile["bucket"]
             prefix = pile.get("prefix", None)
             pattern = pile.get("pattern", None)
-            bucket = self._buckets[bucket]
-            self._piles[name] = PileOperations(bucket, prefix=prefix, pattern=pattern)
+            self._piles[name] = PileOperations(
+                self._buckets[bucket], prefix=prefix, pattern=pattern
+            )
 
     def update_databases(self, databases):
         for database in databases:
@@ -227,9 +233,9 @@ class Itl:
         )
         # yield controller
 
-    def get_stream(self, identifier):
+    def get_url(self, identifier):
         if identifier in self._streams:
-            return self._streams[identifier]
+            return self._streams[identifier].connect_url
         else:
             return identifier
 
@@ -256,7 +262,6 @@ class Itl:
                 task = self._attach_stream, (identifier,)
                 self._downstream_tasks[identifier] = task
             else:
-                stream = self.get_stream(identifier)
                 self._looper.call_soon_threadsafe(
                     self._schedule_downstream_task, identifier
                 )
@@ -485,13 +490,13 @@ class Itl:
         for stream in self._upstreams.values():
             await stream.close()
 
-    async def stream_send(self, key, message, attach_ok=True):
-        if attach_ok:
-            if key not in self._streams:
-                self.update_streams({key: key})
-                self.downstreams([key])
-            else:
-                self.downstreams([key])
+    async def stream_send(self, key, message):
+        if key not in self._streams:
+            # call HTTP POST on key, passing message as data
+            async with aiohttp.ClientSession() as session:
+                async with session.post(key, data=json.dumps(message)) as response:
+                    response.raise_for_status()
+            return
 
         if self._looper:
             self._looper.call_soon_threadsafe(
@@ -585,10 +590,10 @@ class Itl:
                         asyncio.create_task(asyncio.sleep(0)),
                     ]
 
-                ws_url = self.get_stream(identifier)
+                ws_url = self.get_url(identifier)
                 async with websockets.connect(ws_url) as websocket:
                     backoff_time = 0
-                    self._streams[identifier] = websocket
+                    self._streams[identifier].socket = websocket
 
                     while True:
                         done, pending = await asyncio.wait(
