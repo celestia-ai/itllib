@@ -49,6 +49,16 @@ def collect_secrets(secrets_dir):
 
         result[secret_name] = secret_data
 
+    for path in glob(f"{secrets_dir}/*.yaml"):
+        with open(path) as inp:
+            secret_data = yaml.safe_load(inp)
+
+        secret_name = secret_data["metadata"]["name"]
+        if secret_name in bucket_keys:
+            raise ValueError(f"Duplicate key name: {secret_name}")
+
+        result[secret_name] = secret_data
+
     return result
 
 
