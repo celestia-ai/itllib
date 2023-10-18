@@ -73,6 +73,7 @@ class Itl:
         self._stop = False
 
         # Resources
+        self._secrets = {}
         self._streams = {}
         self._buckets = {}
         self._piles = {}
