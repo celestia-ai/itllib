@@ -509,6 +509,9 @@ class Itl:
                     response.raise_for_status()
             return
 
+        if key not in self._downstream_tasks:
+            self.downstreams([key])
+
         if self._looper:
             self._looper.call_soon_threadsafe(
                 self._downstream_queues[key].put_nowait, message
