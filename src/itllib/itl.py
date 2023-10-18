@@ -8,6 +8,7 @@ from glob import glob
 import websockets
 import json
 import aiohttp
+import yaml
 
 from .piles import BucketOperations, PileOperations
 from .clusters import DatabaseOperations, ClusterOperations
@@ -91,7 +92,7 @@ class Itl:
     def apply_config(self, config, secrets):
         if isinstance(config, str):
             with open(config) as inp:
-                config = json.load(inp)
+                config = yaml.safe_load(inp)
 
         self.apply_secrets(secrets)
         self.update_loops(config.get("loops", []))
