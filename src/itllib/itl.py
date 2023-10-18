@@ -52,7 +52,7 @@ def collect_secrets(secrets_dir):
 
 
 class Itl:
-    def __init__(self, secrets_dir=None) -> None:
+    def __init__(self) -> None:
         self._messages = asyncio.Queue()
 
         # User-specified handlers
@@ -88,12 +88,11 @@ class Itl:
         self._connection_tasks = {}
         self._started_streams = set()
 
-        if secrets_dir:
-            self._secrets = collect_secrets(secrets_dir)
-        else:
-            self._secrets = {}
-
     def apply_config(self, config, secrets):
+        if isinstance(config, str):
+            with open(config) as inp:
+                config = json.load(inp)
+
         self.apply_secrets(secrets)
         self.update_loops(config.get("loops", []))
         self.update_streams(config.get("streams", []))
