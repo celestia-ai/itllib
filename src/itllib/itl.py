@@ -104,6 +104,7 @@ class Itl:
         if isinstance(config, str):
             with open(config) as inp:
                 config = yaml.safe_load(inp)
+        config = config["spec"]
 
         self.apply_secrets(secrets)
         self.update_loops(config.get("loops", []))
@@ -163,10 +164,7 @@ class Itl:
             name = pile["name"]
             bucket = pile["bucket"]
             prefix = pile.get("prefix", None)
-            pattern = pile.get("pattern", None)
-            self._piles[name] = PileOperations(
-                self._buckets[bucket], prefix=prefix, pattern=pattern
-            )
+            self._piles[name] = PileOperations(self._buckets[bucket], prefix=prefix)
 
     def update_databases(self, databases):
         for database in databases:
@@ -179,7 +177,11 @@ class Itl:
             name = config["name"]
             database = config["database"]
             stream = config.get("eventStream", None)
-            self._clusters[name] = ClusterOperations(self._databases[database], stream)
+            stream_obj = self._streams[stream]
+            prefix = config.get("prefix", None)
+            self._clusters[name] = ClusterOperations(
+                self._databases[database], stream, stream_obj, prefix=prefix
+            )
 
     def object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
@@ -220,8 +222,15 @@ class Itl:
         # Remember to update the underlying functions
         # To call the REST APIs rather than the database directly
 
-    async def resource_read(self, cluster, name):
-        return await self._clusters[cluster].read_resource(name)
+    async def resource_read_all(
+        self, cluster, group=None, version=None, kind=None, name=None, utctime=None
+    ):
+        return await self._clusters[cluster].read_all_resources(
+            group, version, kind, name, utctime
+        )
+
+    async def resource_read(self, cluster, group, version, kind, name):
+        return await self._clusters[cluster].read_resource(group, version, kind, name)
 
     async def resource_patch(self, cluster, data):
         return await self._clusters[cluster].patch_resource(data)
@@ -235,9 +244,7 @@ class Itl:
     async def resource_delete(self, cluster, group, version, kind, name):
         return await self._clusters[cluster].delete_resource(group, version, kind, name)
 
-    def resource_controller(
-        self, cluster, group, version, kind, name=None, validate=False
-    ):
+    def resource_controller(self, cluster, group, version, kind, name, validate=False):
         cluster_obj = self._clusters[cluster]
         return cluster_obj.control_resource(
             group, version, kind, name, validate=validate
@@ -334,9 +341,9 @@ class Itl:
         if identifier in self._upstream_tasks:
             return
 
-        task = self._attach_stream(identifier)
-        asyncio.create_task(task)
+        task = self._attach_stream, (identifier,)
         self._upstream_tasks[identifier] = task
+        asyncio.create_task(self._attach_stream(identifier))
 
     def ondata(self, stream):
         if stream not in self._upstreams:
@@ -354,10 +361,12 @@ class Itl:
 
         return decorator
 
-    def controller(self, cluster, group=None, version=None, kind=None, validate=False):
-        stream = self._clusters[cluster].stream
-        database = self._clusters[cluster].database.name
-        self.upstreams([stream])
+    def controller(
+        self, cluster, group=None, version=None, kind=None, name=None, validate=False
+    ):
+        cluster_obj = self._clusters[cluster]
+        stream = cluster_obj.stream
+        database = cluster_obj.database.name
 
         def decorator(func):
             async def controller_wrapper(*args, **event):
@@ -366,15 +375,18 @@ class Itl:
                     event["group"],
                     event["version"],
                     event["kind"],
+                    event["name"],
                     validate=validate,
                 )
                 async with operations:
                     self._requires_start[func] = True
                     await func(operations)
-                    print("done")
 
             @self.ondata(stream)
             async def event_handler(*args, **event):
+                if cluster_obj.prefix:
+                    if not event["name"].startswith(cluster_obj.prefix):
+                        return
                 if event["database"] != database:
                     return
                 if group != None and event["group"] != group:

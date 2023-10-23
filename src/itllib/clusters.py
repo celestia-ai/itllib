@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import aiohttp
+from urllib.parse import urlparse
 
 
 def create_patch(old_spec, new_spec):
@@ -52,71 +53,151 @@ class DatabaseOperations:
         self.endpoint_url = secret["spec"]["secretBasicAuth"]["endpoint"]
         self.username = secret["spec"]["secretBasicAuth"]["username"]
         self.password = secret["spec"]["secretBasicAuth"]["password"]
+        self.notifier = secret["spec"]["notifier"]
+
+
+def _remove_scheme(url):
+    parsed = urlparse(url)
+    if parsed.scheme:
+        # Remove the scheme and leading // from the URL
+        return parsed._replace(scheme="").geturl()[2:]
+    else:
+        return url
 
 
 class ClusterOperations:
-    def __init__(self, database, stream):
+    def __init__(self, database, stream, stream_obj, prefix=None):
         self.database = database
         self.stream = stream
+        self.stream_obj = stream_obj
+        self.prefix = prefix or ""
+
+    async def create(self):
+        params = {
+            "domain": _remove_scheme(self.database.endpoint_url),
+            "downstream": self.stream_obj.send_url,
+        }
+        params["prefix"] = self.prefix
+
+        route_url = self.database.notifier + f"/clusters/routes/{self.database.name}"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(route_url, params=params) as response:
+                return response.status
+
+    async def destroy(self):
+        params = {
+            "domain": _remove_scheme(self.database.endpoint_url),
+            "downstream": self.stream_obj.send_url,
+        }
+        params["prefix"] = self.prefix
+
+        route_url = self.database.notifier + f"/clusters/routes/{self.database.name}"
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(route_url, params=params) as response:
+                return response.status
 
     async def create_resource(self, config):
-        group, version = config["metadata"]["apiVersion"].split("/")
-        kind = config["metadata"]["kind"]
+        name = config["metadata"]["name"]
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        group, version = config["apiVersion"].split("/")
+        kind = config["kind"]
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}"
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=config) as response:
                 return await response.json()
 
+    async def read_all_resources(self, group, version, kind, name, utctime):
+        if name and not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        url = f"{self.database.endpoint_url}/{self.database.name}/resources"
+        params = {}
+        if group:
+            params["group"] = group
+        if version:
+            params["version"] = version
+        if kind:
+            params["kind"] = kind
+        if name:
+            params["name"] = name
+        params["prefix"] = self.prefix
+        if utctime:
+            params["utctime"] = utctime
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as response:
+                return await response.json()
+
     async def read_resource(self, group, version, kind, name):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 return await response.json()
 
     async def patch_resource(self, config):
-        group, version = config["metadata"]["apiVersion"].split("/")
-        kind = config["metadata"]["kind"]
         name = config["metadata"]["name"]
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        group, version = config["apiVersion"].split("/")
+        kind = config["kind"]
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.patch(url, json=config) as response:
                 return await response.json()
 
     async def update_resource(self, config):
-        group, version = config["metadata"]["apiVersion"].split("/")
-        kind = config["metadata"]["kind"]
         name = config["metadata"]["name"]
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        group, version = config["apiVersion"].split("/")
+        kind = config["kind"]
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}?create=false"
         async with aiohttp.ClientSession() as session:
             async with session.put(url, json=config) as response:
                 return await response.json()
 
     async def apply_resource(self, config):
-        group, version = config["metadata"]["apiVersion"].split("/")
-        kind = config["metadata"]["kind"]
         name = config["metadata"]["name"]
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        group, version = config["apiVersion"].split("/")
+        kind = config["kind"]
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}?create=true"
         async with aiohttp.ClientSession() as session:
             async with session.put(url, json=config) as response:
                 return await response.json()
 
     async def delete_resource(self, group, version, kind, name):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.delete(url) as response:
                 return await response.json()
 
-    async def lock_resource(self, group, version, kind, name=None):
-        if name == None:
-            url = f"{self.database.endpoint_url}/{self.database.name}/claim/{group}/{version}/{kind}"
-        else:
-            url = f"{self.database.endpoint_url}/{self.database.name}/claim/{group}/{version}/{kind}/{name}"
+    async def lock_resource(self, group, version, kind, name):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        url = f"{self.database.endpoint_url}/{self.database.name}/claim/{group}/{version}/{kind}/{name}"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url) as response:
                 return await response.json()
 
     async def unlock_resource(self, group, version, kind, name):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
         url = f"{self.database.endpoint_url}/{self.database.name}/release-claim/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.post(url) as response:
@@ -125,6 +206,9 @@ class ClusterOperations:
     async def resolve_resource(
         self, group, version, kind, name, config, operations, delete=False, force=False
     ):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
         url = f"{self.database.endpoint_url}/{self.database.name}/resolve-claim/{group}/{version}/{kind}/{name}?force={force}"
         data = {"operations": operations, "delete": delete}
         if config != None:
@@ -134,7 +218,10 @@ class ClusterOperations:
             async with session.post(url, json=data) as response:
                 return await response.json()
 
-    def control_resource(self, group, version, kind, name=None, validate=False):
+    def control_resource(self, group, version, kind, name, validate=False):
+        if not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
         return ResourceController(self, group, version, kind, name, validate=validate)
 
 
@@ -171,7 +258,7 @@ class ResourceController:
         self.locked = initial_ops != []
 
         if initial_ops:
-            self.locked_config_name = initial_ops[0]["config"]["metadata"]["name"]
+            self.locked_config_name = initial_ops[0]["name"]
         else:
             self.locked_config_name = None
 
@@ -229,7 +316,10 @@ class ResourceController:
             self.pending_ops = sorted(new_ops, key=lambda x: x["timestamp"])
         elif not self.name:
             # If there are no new operations for this object, check other objects if needed
+            self.locked_config_name = None
             await self.acquire_object()
+        else:
+            self.locked_config_name = None
 
     def __aiter__(self):
         return self

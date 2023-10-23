@@ -57,18 +57,14 @@ class BucketOperations:
 
 
 class PileOperations:
-    def __init__(self, bucket, prefix=None, pattern=None):
+    def __init__(self, bucket, prefix=None):
         self.bucket = bucket
         self.prefix = prefix
-        self.pattern = pattern
 
     def put(self, key, file_descriptor, metadata={}):
         if self.prefix != None:
             if not key.startswith(self.prefix):
                 raise ValueError(f"Key {key} needs to start with prefix {self.prefix}")
-        elif self.pattern != None:
-            if not re.match(self.pattern, key):
-                raise ValueError(f"Key {key} needs to match pattern {self.pattern}")
 
         return self.bucket.put_object(key, file_descriptor, metadata=metadata)
 
@@ -76,9 +72,6 @@ class PileOperations:
         if self.prefix != None:
             if not key.startswith(self.prefix):
                 raise ValueError(f"Key {key} needs to start with prefix {self.prefix}")
-        elif self.pattern != None:
-            if not re.match(self.pattern, key):
-                raise ValueError(f"Key {key} needs to match pattern {self.pattern}")
 
         contents, metadata = self.bucket.get_object(key)
         return contents, metadata
@@ -87,8 +80,5 @@ class PileOperations:
         if self.prefix != None:
             if not key.startswith(self.prefix):
                 raise ValueError(f"Key {key} needs to start with prefix {self.prefix}")
-        elif self.pattern != None:
-            if not re.match(self.pattern, key):
-                raise ValueError(f"Key {key} needs to match pattern {self.pattern}")
 
         return self.bucket.delete_object(Key=key)
