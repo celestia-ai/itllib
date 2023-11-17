@@ -43,10 +43,11 @@ class LoopOperations:
 
 
 class StreamOperations:
-    def __init__(self, loop, key, group=None):
+    def __init__(self, loop, key, group=None, connect_url=None):
         self.loop = loop
         self.key = key
         self.group = group
+        self._connect_url = connect_url
         self.socket = None
 
     async def send(self, str):
@@ -57,7 +58,9 @@ class StreamOperations:
 
     @property
     def connect_url(self):
-        if self.group != None:
+        if self._connect_url:
+            return self._connect_url
+        elif self.group != None:
             return f"{self.loop.connect_url}/{self.key}/{self.group}"
         else:
             return f"{self.loop.connect_url}/{self.key}"

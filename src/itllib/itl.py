@@ -4,6 +4,7 @@ import inspect
 import threading
 import typing
 from glob import glob
+import traceback
 
 import websockets
 import json
@@ -64,20 +65,19 @@ def collect_secrets(secrets_dir):
 
 class Itl:
     def __init__(self) -> None:
-        self._messages = asyncio.Queue()
-
         # User-specified handlers
         self._data_handlers = {}
-        self._trigger_handlers = {}
         self._controllers = {}
-        self._requires_start = {}
         self._main = None
         self._post_connect = None
 
         # Async stuff
-        self._thread = None
-        self._looper = None
-        self._message_tasks = []
+        self._connection_thread = None
+        self._connection_looper = None
+        self._connection_tasks = asyncio.Queue()
+        self._callback_thread = None
+        self._callback_looper = None
+        self._callback_tasks = asyncio.Queue()
 
         # Old stuff, to be removed
         self._stop = False
@@ -94,11 +94,11 @@ class Itl:
         # Stream interactions
         self._downstreams = {}
         self._upstreams = {}
-        self._upstream_tasks = {}
-        self._downstream_tasks = {}
+        self._stream_tasks = {}
+        self._stream_tasks = {}
         self._downstream_queues = defaultdict(asyncio.Queue)
-        self._connection_tasks = {}
         self._started_streams = set()
+        self._cluster_tasks = []
 
     def apply_config(self, config, secrets):
         if isinstance(config, str):
@@ -106,7 +106,7 @@ class Itl:
                 config = yaml.safe_load(inp)
         config = config["spec"]
 
-        self.apply_secrets(secrets)
+        self._update_secrets(secrets)
         self.update_loops(config.get("loops", []))
         self.update_streams(config.get("streams", []))
         self.update_buckets(config.get("buckets", []))
@@ -114,7 +114,7 @@ class Itl:
         self.update_databases(config.get("databases", []))
         self.update_clusters(config.get("clusters", []))
 
-    def apply_secrets(self, secrets_dir):
+    def _update_secrets(self, secrets_dir):
         # TODO: update affected resources
         self._secrets.update(collect_secrets(secrets_dir))
 
@@ -217,7 +217,12 @@ class Itl:
 
         return pile_ops.delete(key)
 
-    async def resource_create(self, cluster, data):
+    async def resource_create(self, cluster, data, attach_prefix=False):
+        if attach_prefix:
+            data = data.copy()
+            data["metadata"]["name"] = (
+                self._clusters[cluster].prefix + data["metadata"]["name"]
+            )
         return await self._clusters[cluster].create_resource(data)
         # Remember to update the underlying functions
         # To call the REST APIs rather than the database directly
@@ -229,79 +234,62 @@ class Itl:
             group, version, kind, name, utctime
         )
 
-    async def resource_read(self, cluster, group, version, kind, name):
+    async def resource_read(
+        self, cluster, group, version, kind, name, attach_prefix=False
+    ):
+        if attach_prefix:
+            name = self._clusters[cluster].prefix + name
         return await self._clusters[cluster].read_resource(group, version, kind, name)
 
-    async def resource_patch(self, cluster, data):
+    async def resource_patch(self, cluster, data, attach_prefix=False):
+        if attach_prefix:
+            data = data.copy()
+            data["metadata"]["name"] = (
+                self._clusters[cluster].prefix + data["metadata"]["name"]
+            )
         return await self._clusters[cluster].patch_resource(data)
 
-    async def resource_update(self, cluster, data):
+    async def resource_update(self, cluster, data, attach_prefix=False):
+        if attach_prefix:
+            data = data.copy()
+            data["metadata"]["name"] = (
+                self._clusters[cluster].prefix + data["metadata"]["name"]
+            )
         return await self._clusters[cluster].update_resource(data)
 
-    async def resource_apply(self, cluster, data):
+    async def resource_apply(self, cluster, data, attach_prefix=False):
+        if attach_prefix:
+            data = data.copy()
+            data["metadata"]["name"] = (
+                self._clusters[cluster].prefix + data["metadata"]["name"]
+            )
         return await self._clusters[cluster].apply_resource(data)
 
-    async def resource_delete(self, cluster, group, version, kind, name):
+    async def resource_delete(
+        self, cluster, group, version, kind, name, attach_prefix=False
+    ):
+        if attach_prefix:
+            name = self._clusters[cluster].prefix + name
         return await self._clusters[cluster].delete_resource(group, version, kind, name)
 
-    def resource_controller(self, cluster, group, version, kind, name, validate=False):
+    def resource_controller(
+        self, cluster, group, version, kind, name, validate=True, attach_prefix=False
+    ):
+        if attach_prefix:
+            name = self._clusters[cluster].prefix + name
         cluster_obj = self._clusters[cluster]
         return cluster_obj.control_resource(
             group, version, kind, name, validate=validate
         )
         # yield controller
 
-    def get_url(self, identifier):
+    def _get_url(self, identifier):
         if identifier in self._streams:
             return self._streams[identifier].connect_url
         else:
             return identifier
 
-    def downstreams(self, streams):
-        """
-        Update the downstream tasks based on the provided streams. If a downstream task for a
-        given identifier already exists, it is skipped. If the looper isn't initialized,
-        a task to attach the downstream is created. If the looper is initialized, a new downstream task
-        is scheduled to run asynchronously.
-
-        Args:
-        - streams (List[str]): List of stream identifiers to be processed.
-
-        Returns:
-        None
-        """
-        for identifier in streams:
-            # Skip creating a task if it already exists
-            if identifier in self._downstream_tasks:
-                continue
-
-            # Check if the Itl is already running
-            if not self._looper:
-                task = self._attach_stream, (identifier,)
-                self._downstream_tasks[identifier] = task
-            else:
-                self._looper.call_soon_threadsafe(
-                    self._schedule_downstream_task, identifier
-                )
-
-    def _schedule_downstream_task(self, identifier):
-        """
-        Schedules a downstream task for the given identifier if it doesn't already exist.
-
-        Args:
-        - identifier (str): Identifier for the stream.
-
-        Returns:
-        None
-        """
-        if identifier in self._downstream_tasks:
-            return
-
-        task = self._attach_stream(identifier)
-        asyncio.create_task(task)
-        self._downstream_tasks[identifier] = task
-
-    def upstreams(self, streams):
+    def _ensure_stream_connection(self, streams):
         """
         Update the upstream tasks based on the provided streams. If an upstream task for a
         given identifier already exists, it is skipped. If the looper isn't initialized,
@@ -316,19 +304,20 @@ class Itl:
         """
         for identifier in streams:
             # Skip creating a task if it already exists
-            if identifier in self._upstream_tasks:
+            if identifier in self._stream_tasks:
                 continue
 
             # Check if the Itl is already running
-            if not self._looper:
+            if not self._connection_looper:
                 task = self._attach_stream, (identifier,)
-                self._upstream_tasks[identifier] = task
+                self._stream_tasks[identifier] = task
             else:
-                self._looper.call_soon_threadsafe(
-                    self._schedule_upstream_task, identifier
+                self._connection_looper.call_soon_threadsafe(
+                    self._connection_tasks.put_nowait,
+                    lambda: self._schedule_stream_task_unsafe(identifier),
                 )
 
-    def _schedule_upstream_task(self, identifier):
+    def _schedule_stream_task_unsafe(self, identifier):
         """
         Schedules an upstream task for the given identifier if it doesn't already exist.
 
@@ -338,16 +327,16 @@ class Itl:
         Returns:
         None
         """
-        if identifier in self._upstream_tasks:
+        if identifier in self._stream_tasks:
             return
 
         task = self._attach_stream, (identifier,)
-        self._upstream_tasks[identifier] = task
+        self._stream_tasks[identifier] = task
         asyncio.create_task(self._attach_stream(identifier))
 
     def ondata(self, stream):
         if stream not in self._upstreams:
-            self.upstreams([stream])
+            self._ensure_stream_connection([stream])
 
         def decorator(func):
             self._data_handlers.setdefault(stream, []).append(func)
@@ -355,15 +344,19 @@ class Itl:
 
         return decorator
 
-    def ontrigger(self, stream):
-        def decorator(func):
-            self._trigger_handlers.setdefault(stream, []).append(func)
-
-        return decorator
-
     def controller(
-        self, cluster, group=None, version=None, kind=None, name=None, validate=False
+        self,
+        cluster,
+        group=None,
+        version=None,
+        kind=None,
+        name=None,
+        validate=True,
+        attach_prefix=False,
     ):
+        if attach_prefix:
+            name = self._clusters[cluster].prefix + name
+
         cluster_obj = self._clusters[cluster]
         stream = cluster_obj.stream
         database = cluster_obj.database.name
@@ -379,8 +372,12 @@ class Itl:
                     validate=validate,
                 )
                 async with operations:
-                    self._requires_start[func] = True
-                    await func(operations)
+                    try:
+                        await func(operations)
+                    except Exception as e:
+                        print(
+                            f"Error in controller {func.__name__}: {traceback.format_exc()}"
+                        )
 
             @self.ondata(stream)
             async def event_handler(*args, **event):
@@ -389,19 +386,25 @@ class Itl:
                         return
                 if event["database"] != database:
                     return
-                if group != None and event["group"] != group:
+                if group and event["group"] != group:
                     return
-                if version != None and event["version"] != version:
+                if version and event["version"] != version:
                     return
-                if kind != None and event["kind"] != kind:
+                if kind and event["kind"] != kind:
                     return
 
-                requires_start = self._requires_start.get(func, True)
-                self._requires_start[func] = False
-                if requires_start:
-                    asyncio.create_task(controller_wrapper(*args, **event))
+                asyncio.create_task(controller_wrapper(*args, **event))
 
             self._controllers.setdefault(cluster, []).append(func)
+
+            async def check_queue():
+                for queued_op in await cluster_obj.read_queue(
+                    group, version, kind, name
+                ):
+                    asyncio.create_task(controller_wrapper(**queued_op))
+
+            self._cluster_tasks.append((check_queue, ()))
+
             return func
 
         return decorator
@@ -414,122 +417,79 @@ class Itl:
         self._post_connect = func
         return func
 
-    async def handle_request(self, scope):
-        # TODO: This isn't used right now. Update it so accepts a parameter dictionary directly.
-        """
-        Handle an incoming request by matching the scope to a route and executing the corresponding
-        function. Check that the method is supported, then parse the path and match it to a route.
-        Once a route is matched, validate and update the arguments and call the corresponding function.
-
-        :param scope: The request scope containing type, method, path, and data.
-        :param receive: The receive callable for the ASGI application.
-        :param send: The send callable for the ASGI application.
-        :return: The result of the matched function, or None if no match is found.
-        :raises ValueError: If the scope type is not 'itl' or the method is unsupported.
-        """
-
-        method = scope["method"]
-        if method not in self.routes:
-            raise ValueError(
-                "Unsupported method, must be one of: " + ", ".join(self.routes.keys())
-            )
-
-        # Parse the path and prepare the path parameters
-        request_path = scope["path"]
-        path_params = None
-
-        # Iterate through the routes to find a matching route
-        for route_pattern, route_func, expected_params, type_hints in self.routes[
-            method
-        ]:
-            pattern_parts = route_pattern.split("/")
-            path_parts = request_path.split("/")
-
-            is_match = True
-            extracted_params = {}
-
-            if len(pattern_parts) != len(path_parts):
-                continue
-
-            # Match each part of the candidate route to the request path
-            for pattern_part, path_part in zip(pattern_parts, path_parts):
-                if pattern_part.startswith("{") and pattern_part.endswith("}"):
-                    extracted_params[pattern_part[1:-1]] = path_part
-                elif pattern_part != path_part:
-                    is_match = False
-                    break
-
-            if not is_match:
-                continue
-
-            # Convert the values based on type hints
-            for key, value in extracted_params.items():
-                if key in type_hints:
-                    extracted_params[key] = type_hints[key](value)
-
-            for key, value in scope.get("data", {}).items():
-                if key in type_hints:
-                    scope["data"][key] = type_hints[key](value)
-
-            scope["path_params"] = extracted_params
-
-            # Check if the arguments match the function signature
-            unexpected_args = extracted_params.keys() - expected_params
-            if unexpected_args:
-                print(f"Unexpected arguments: {', '.join(unexpected_args)}")
-                return False
-
-            await route_func(scope)
-            return
-
-        print("No match for scope", scope)
-
     async def _process_upstream_messages(self):
-        while not self._stop:
-            # TODO: check all incoming streams for messages
+        if self._main:
+            await self._main()
 
-            # empty the queue
-            while not self._messages.empty():
+        def process_message(identifier, serialized_data):
+            message = json.loads(serialized_data)
+            # TODO: Run all handlers in parallel
+            for handler in self._data_handlers[identifier]:
+                if isinstance(message, dict):
+                    args = []
+                    kwargs = message
+                else:
+                    args = [message]
+                    kwargs = {}
+
                 try:
-                    await self._messages.get()
-                except asyncio.CancelledError:
-                    pass
+                    if inspect.iscoroutinefunction(handler):
+                        asyncio.create_task(handler(*args, **kwargs))
+                    else:
+                        handler(*args, **kwargs)
+                except Exception as e:
+                    print(
+                        f"Error in handler {handler.__name__}: {traceback.format_exc()}"
+                    )
+
+        while True:
+            task = await self._callback_tasks.get()
 
             if self._stop:
                 break
 
-            # otherwise, wait for a message
+            if task == None:
+                continue
+
+            identifier, serialized_data = task
+
             try:
-                await self._messages.get()
+                process_message(identifier, serialized_data)
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                print(f"Error in message processing: {traceback.format_exc()}")
 
         for queue in self._downstream_queues.values():
-            queue.put_nowait(None)
+            self._connection_looper.call_soon_threadsafe(queue.put_nowait, None)
 
         for stream in self._downstreams.values():
-            await stream.close()
+            self._connection_looper.call_soon_threadsafe(stream.close)
 
         for stream in self._upstreams.values():
-            await stream.close()
+            self._connection_looper.call_soon_threadsafe(stream.close)
 
     async def stream_send(self, key, message):
-        if key not in self._streams:
+        if key not in self._streams and (
+            key.startswith("http://") or key.startswith("https://")
+        ):
             # call HTTP POST on key, passing message as data
             async with aiohttp.ClientSession() as session:
                 async with session.post(key, data=json.dumps(message)) as response:
                     response.raise_for_status()
             return
 
-        self.downstreams([key])
+        self._ensure_stream_connection([key])
 
-        if self._looper:
-            self._looper.call_soon_threadsafe(
+        if self._connection_looper:
+            self._connection_looper.call_soon_threadsafe(
                 self._downstream_queues[key].put_nowait, message
             )
         else:
             task = self._downstream_queues[key].put, (message,)
-            self._message_tasks.append(task)
+            self._connection_looper.call_soon_threadsafe(
+                self._downstream_queues[key].put_nowait, task
+            )
 
     def _requeue(self, identifier, message):
         if message == None:
@@ -542,7 +502,7 @@ class Itl:
         while not old_queue.empty():
             new_queue.put_nowait(old_queue.get_nowait())
 
-        self._downstream_tasks[identifier] = new_queue
+        self._downstream_queues[identifier] = new_queue
 
     async def _attach_stream(self, identifier):
         if identifier in self._started_streams:
@@ -551,6 +511,11 @@ class Itl:
         self._started_streams.add(identifier)
         state = Namespace()
         state.message = None
+
+        if identifier not in self._streams:
+            self._streams[identifier] = StreamOperations(
+                None, None, connect_url=identifier
+            )
 
         async def send_message():
             state.message = (
@@ -585,22 +550,10 @@ class Itl:
             if identifier not in self._data_handlers:
                 return True
 
-            self._messages.put_nowait(None)
-
-            message = json.loads(serialized_data)
-            # TODO: Run all handlers in parallel
-            for handler in self._data_handlers[identifier]:
-                if isinstance(message, dict):
-                    args = []
-                    kwargs = message
-                else:
-                    args = [message]
-                    kwargs = {}
-
-                if inspect.iscoroutinefunction(handler):
-                    asyncio.create_task(handler(*args, **kwargs))
-                else:
-                    handler(*args, **kwargs)
+            self._callback_looper.call_soon_threadsafe(
+                self._callback_tasks.put_nowait, (identifier, serialized_data)
+            )
+            # self._callback_tasks.put_nowait((identifier, serialized_data))
 
             return True
 
@@ -615,7 +568,7 @@ class Itl:
                         asyncio.create_task(asyncio.sleep(0)),
                     ]
 
-                ws_url = self.get_url(identifier)
+                ws_url = self._get_url(identifier)
                 async with websockets.connect(ws_url) as websocket:
                     backoff_time = 0
                     self._streams[identifier].socket = websocket
@@ -632,8 +585,8 @@ class Itl:
                         for completed in done:
                             if completed.result() == False:
                                 connection_closed = True
-
-                            if completed == tasks[0]:
+                                tasks = None
+                            elif completed == tasks[0]:
                                 tasks[0] = asyncio.create_task(send_message())
                             elif completed == tasks[1]:
                                 tasks[1] = asyncio.create_task(recv_message())
@@ -647,7 +600,6 @@ class Itl:
                 pass
 
             if self._stop:
-                print("stopping, completed")
                 return
 
             # Backoff before reconnecting
@@ -661,11 +613,9 @@ class Itl:
 
     async def _connect(self):
         tasks = []
-        for fn, args in self._upstream_tasks.values():
-            tasks.append(fn(*args))
-        for fn, args in self._downstream_tasks.values():
-            tasks.append(fn(*args))
-        for fn, args in self._message_tasks:
+        for fn, args in self._stream_tasks.values():
+            asyncio.create_task(fn(*args))
+        for fn, args in self._cluster_tasks:
             tasks.append(fn(*args))
 
         await asyncio.gather(*tasks)
@@ -673,37 +623,51 @@ class Itl:
         if self._post_connect:
             await self._post_connect()
 
-    def start_thread(self):
-        self._thread = threading.Thread(target=self._run_in_thread)
-        self._thread.start()
+    def start(self):
+        self._connection_thread = threading.Thread(
+            target=self._handle_connections_in_thread
+        )
+        self._connection_thread.start()
 
-    def join(self):
-        self._thread.join()
+        self._callback_thread = threading.Thread(
+            target=self._handle_callbacks_in_thread
+        )
+        self._callback_thread.start()
 
-    def _run_in_thread(self):
-        self._looper = looper = asyncio.new_event_loop()
+    def _handle_connections_in_thread(self):
+        self._connection_looper = looper = asyncio.new_event_loop()
         asyncio.set_event_loop(looper)
-        asyncio.get_event_loop().set_debug(True)
-        looper.run_until_complete(main(self))
+        looper.set_debug(True)
+        looper.run_until_complete(self._start_routine())
         looper.close()
 
-    def stop_thread(self):
-        self.stop_itl()
+    def _handle_callbacks_in_thread(self):
+        self._callback_looper = looper = asyncio.new_event_loop()
+        asyncio.set_event_loop(looper)
+        looper.set_debug(True)
+        looper.run_until_complete(self._process_upstream_messages())
+        looper.close()
 
-    def stop_itl(self):
+    def stop(self):
         self._stop = True
-        self._looper.call_soon_threadsafe(self._messages.put_nowait, None)
-        self._looper = None
+        self._callback_looper.call_soon_threadsafe(
+            self._callback_tasks.put_nowait, None
+        )
+        self._callback_looper.call_soon_threadsafe(
+            self._connection_tasks.put_nowait, None
+        )
 
+    async def _start_routine(self):
+        self._looper = asyncio.get_event_loop()
+        tasks = []
+        for cluster in self._clusters.values():
+            tasks.append(cluster.create())
 
-async def main(itl, args=None):
-    process_messages_task = itl._process_upstream_messages()
+        await self._connect()
+        await asyncio.gather(*tasks)
 
-    async def start_routine():
-        itl._looper = asyncio.get_event_loop()
-        await itl._connect()
-
-        if itl._main:
-            await itl._main()
-
-    await asyncio.gather(process_messages_task, start_routine())
+        while True:
+            task = await self._connection_tasks.get()
+            if self._stop:
+                break
+            task()

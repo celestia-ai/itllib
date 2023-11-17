@@ -1,1 +1,2 @@
-from .itl import Itl, main
+from .itl import Itl
+from .clusters import ResourceController

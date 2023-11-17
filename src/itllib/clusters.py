@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import aiohttp
+import json
 from urllib.parse import urlparse
 
 
@@ -171,9 +172,13 @@ class ClusterOperations:
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}?create=true"
+        data = json.dumps(config)
+        headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
-            async with session.put(url, json=config) as response:
-                return await response.json()
+            async with session.put(url, headers=headers, data=data) as response:
+                text = await response.text()
+                # return await response.json()
+                return json.loads(text)
 
     async def delete_resource(self, group, version, kind, name):
         if not name.startswith(self.prefix):
@@ -182,6 +187,31 @@ class ClusterOperations:
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.delete(url) as response:
+                return await response.json()
+
+    async def read_queue(
+        self, group=None, version=None, kind=None, name=None, utctime=None
+    ):
+        if name and not name.startswith(self.prefix):
+            raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
+
+        url = f"{self.database.endpoint_url}/{self.database.name}/queue"
+        params = {}
+        if group:
+            params["group"] = group
+        if version:
+            params["version"] = version
+        if kind:
+            params["kind"] = kind
+        if name:
+            params["name"] = name
+        else:
+            params["prefix"] = self.prefix
+        if utctime:
+            params["timestamp"] = utctime
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as response:
                 return await response.json()
 
     async def lock_resource(self, group, version, kind, name):
