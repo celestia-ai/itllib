@@ -69,8 +69,6 @@ class Itl:
         # User-specified handlers
         self._data_handlers = {}
         self._controllers = {}
-        self._main = None
-        self._post_connect = None
 
         # Async stuff
         self._connection_thread = None
@@ -95,11 +93,11 @@ class Itl:
         # Stream interactions
         self._downstreams = {}
         self._upstreams = {}
-        self._stream_tasks = {}
-        self._stream_tasks = {}
+        self._start_persistent_tasks = {}
         self._downstream_queues = defaultdict(asyncio.Queue)
         self._started_streams = set()
-        self._cluster_tasks = []
+        self._start_ephemeral_tasks = []
+        self._post_connection_tasks = []
 
     def apply_config(self, config, secrets):
         if isinstance(config, str):
@@ -305,13 +303,13 @@ class Itl:
         """
         for identifier in streams:
             # Skip creating a task if it already exists
-            if identifier in self._stream_tasks:
+            if identifier in self._start_persistent_tasks:
                 continue
 
             # Check if the Itl is already running
             if not self._connection_looper:
                 task = self._attach_stream, (identifier,)
-                self._stream_tasks[identifier] = task
+                self._start_persistent_tasks[identifier] = task
             else:
                 self._connection_looper.call_soon_threadsafe(
                     self._connection_tasks.put_nowait,
@@ -328,11 +326,11 @@ class Itl:
         Returns:
         None
         """
-        if identifier in self._stream_tasks:
+        if identifier in self._start_persistent_tasks:
             return
 
         task = self._attach_stream, (identifier,)
-        self._stream_tasks[identifier] = task
+        self._start_persistent_tasks[identifier] = task
         asyncio.create_task(self._attach_stream(identifier))
 
     def ondata(self, stream):
@@ -407,23 +405,31 @@ class Itl:
                 ):
                     asyncio.create_task(controller_wrapper(**queued_op))
 
-            self._cluster_tasks.append((check_queue, ()))
+            self._start_ephemeral_tasks.append((check_queue, ()))
 
             return func
 
         return decorator
 
-    def onstart(self, func):
-        self._main = func
-        return func
-
     def onconnect(self, func):
-        self._post_connect = func
+        if self._callback_looper:
+            self._callback_looper.call_soon_threadsafe(
+                self._callback_tasks.put_nowait, (func, ())
+            )
+        else:
+            self._start_ephemeral_tasks.append((func, ()))
+
         return func
 
     async def _process_upstream_messages(self):
-        if self._main:
-            await self._main()
+        def exec_callback(handler, args, kwargs):
+            try:
+                if inspect.iscoroutinefunction(handler):
+                    asyncio.create_task(handler(*args, **kwargs))
+                else:
+                    handler(*args, **kwargs)
+            except Exception as e:
+                print(f"Error in handler {handler.__name__}: {traceback.format_exc()}")
 
         def process_message(identifier, serialized_data):
             message = json.loads(serialized_data)
@@ -436,15 +442,7 @@ class Itl:
                     args = [message]
                     kwargs = {}
 
-                try:
-                    if inspect.iscoroutinefunction(handler):
-                        asyncio.create_task(handler(*args, **kwargs))
-                    else:
-                        handler(*args, **kwargs)
-                except Exception as e:
-                    print(
-                        f"Error in handler {handler.__name__}: {traceback.format_exc()}"
-                    )
+                exec_callback(handler, args, kwargs)
 
         while True:
             task = await self._callback_tasks.get()
@@ -458,7 +456,10 @@ class Itl:
             identifier, serialized_data = task
 
             try:
-                process_message(identifier, serialized_data)
+                if isinstance(identifier, str):
+                    process_message(identifier, serialized_data)
+                else:
+                    exec_callback(identifier, serialized_data, {})
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -629,16 +630,22 @@ class Itl:
         return min(current_backoff_time + 1, 7)
 
     async def _connect(self):
-        tasks = []
-        for fn, args in self._stream_tasks.values():
+        connection_tasks = []
+        for fn, args in self._start_persistent_tasks.values():
             asyncio.create_task(fn(*args))
-        for fn, args in self._cluster_tasks:
-            tasks.append(fn(*args))
+        for fn, args in self._start_ephemeral_tasks:
+            connection_tasks.append(fn(*args))
 
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*connection_tasks)
 
-        if self._post_connect:
-            await self._post_connect()
+        post_connection_tasks = []
+        for fn, args in self._post_connection_tasks:
+            post_connection_tasks.append(fn(*args))
+
+        await asyncio.gather(*post_connection_tasks)
+
+        # if self._post_connect:
+        #     await self._post_connect()
 
     def start(self):
         self._connection_thread = threading.Thread(

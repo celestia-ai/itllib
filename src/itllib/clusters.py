@@ -252,10 +252,10 @@ class ClusterOperations:
         if not name.startswith(self.prefix):
             raise ValueError(f"Name {name} needs to start with prefix {self.prefix}")
 
-        return ResourceController(self, group, version, kind, name, validate=validate)
+        return BaseController(self, group, version, kind, name, validate=validate)
 
 
-class ResourceController:
+class BaseController:
     def __init__(
         self, config_ops: ClusterOperations, group, version, kind, name, validate=False
     ):
@@ -410,7 +410,7 @@ class ResourceController:
 
 
 class PendingOperation:
-    def __init__(self, controller: ResourceController, data):
+    def __init__(self, controller: BaseController, data):
         self.controller = controller
         self.data = data
 
