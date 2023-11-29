@@ -10,6 +10,7 @@ import websockets
 import json
 import aiohttp
 import yaml
+import requests
 
 from .piles import BucketOperations, PileOperations
 from .clusters import DatabaseOperations, ClusterOperations
@@ -381,6 +382,9 @@ class Itl:
 
             @self.ondata(stream)
             async def event_handler(*args, **event):
+                if event["event"] != "queue":
+                    return
+
                 if cluster_obj.prefix:
                     if not event["name"].startswith(cluster_obj.prefix):
                         return
@@ -491,6 +495,20 @@ class Itl:
                 self._downstream_queues[key].put_nowait, task
             )
 
+    def stream_send_sync(self, key, message):
+        if key.startswith("http://") or key.startswith("https://"):
+            # call HTTP POST on key, passing message as data
+            requests.post(url=key, json=json.dumps(message))
+            return
+
+        self._ensure_stream_connection([key])
+
+        if self._connection_looper:
+            self._downstream_queues[key].put_nowait(message)
+        else:
+            task = self._downstream_queues[key].put, (message,)
+            self._downstream_queues[key].put_nowait(task)
+
     def _requeue(self, identifier, message):
         if message == None:
             return
@@ -553,7 +571,6 @@ class Itl:
             self._callback_looper.call_soon_threadsafe(
                 self._callback_tasks.put_nowait, (identifier, serialized_data)
             )
-            # self._callback_tasks.put_nowait((identifier, serialized_data))
 
             return True
 
