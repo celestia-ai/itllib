@@ -182,6 +182,12 @@ class Itl:
                 self._databases[database], stream, stream_obj, prefix=prefix
             )
 
+    def attach_cluster_prefix(self, cluster, name):
+        return self._clusters[cluster].prefix + name
+
+    def attach_pile_prefix(self, pile, name):
+        return self._piles[pile].prefix + name
+
     def object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
             raise ValueError("Exactly one of key or event must be provided")
@@ -474,14 +480,19 @@ class Itl:
         for stream in self._upstreams.values():
             self._connection_looper.call_soon_threadsafe(stream.close)
 
-    async def stream_send(self, key, message):
+    async def _post_stream_message(self, url, message):
+        # call HTTP POST on key, passing message as data
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=json.dumps(message)) as response:
+                response.raise_for_status()
+
+    def stream_send(self, key, message):
         if key not in self._streams and (
             key.startswith("http://") or key.startswith("https://")
         ):
-            # call HTTP POST on key, passing message as data
-            async with aiohttp.ClientSession() as session:
-                async with session.post(key, data=json.dumps(message)) as response:
-                    response.raise_for_status()
+            asyncio.run_coroutine_threadsafe(
+                self._post_stream_message(key, message), self._connection_looper
+            )
             return
 
         self._ensure_stream_connection([key])

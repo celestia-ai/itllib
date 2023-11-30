@@ -58,7 +58,7 @@ class ResourceController:
 
                 await op.accept()
 
-            except ValueError as e:
+            except Exception as e:
                 await op.reject()
                 print(f"Failed to load resource {self.kind}/{pending.name}: {e}")
 
@@ -85,7 +85,7 @@ class ResourceController:
                     result = self.create_resource(config["config"])
                     self._add_resource(config["name"], result)
                     print("Loaded", self.kind, config["name"])
-                except ValueError as e:
+                except Exception as e:
                     print(f'Failed to load resource {config["name"]}: {e}')
 
     def _register_parent(self, resource_set):
@@ -179,3 +179,6 @@ class SyncedResources:
 
     def get(self, name, default=None):
         return self._collection.get(name, default)
+
+    def __setitem__(self, name, value):
+        self._collection[name] = value
