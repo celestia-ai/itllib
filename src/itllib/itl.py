@@ -688,7 +688,7 @@ class Itl:
         self._callback_looper.call_soon_threadsafe(
             self._callback_tasks.put_nowait, None
         )
-        self._callback_looper.call_soon_threadsafe(
+        self._connection_looper.call_soon_threadsafe(
             self._connection_tasks.put_nowait, None
         )
 
