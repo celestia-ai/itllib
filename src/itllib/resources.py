@@ -32,7 +32,7 @@ class ResourceController:
             if config == None:
                 # Delete the resource
                 resource = self._get_resource(pending.name)
-                self.delete_resource(resource)
+                await self.delete_resource(resource)
                 self._remove_resource(pending.name)
                 await op.accept()
                 print("Deleted", f"{self.kind}/{pending.name}")
@@ -43,7 +43,7 @@ class ResourceController:
 
             try:
                 if old_resource == None:
-                    result = self.create_resource(config)
+                    result = await self.create_resource(config)
                     if result == None:
                         await op.reject()
                         print("Rejected", f"{self.kind}/{pending.name}")
@@ -53,7 +53,7 @@ class ResourceController:
                     print("Created", f"{self.kind}/{pending.name}")
                 else:
                     result = old_resource
-                    self.update_resource(result, config)
+                    await self.update_resource(result, config)
                     print("Reconfigured", f"{self.kind}/{pending.name}")
 
                 await op.accept()
@@ -62,17 +62,17 @@ class ResourceController:
                 await op.reject()
                 print(f"Failed to load resource {self.kind}/{pending.name}: {e}")
 
-    def create_resource(self, config):
+    async def create_resource(self, config):
         raise ValueError("create_resource not implemented")
 
-    def update_resource(self, resource, config):
+    async def update_resource(self, resource, config):
         name = config["metadata"]["name"]
-        result = self.create_resource(config)
+        result = await self.create_resource(config)
         if result == None:
             raise ValueError("create_resource returned None for", config)
         self._add_resource(name, result)
 
-    def delete_resource(self, resource):
+    async def delete_resource(self, resource):
         pass
 
     async def load_existing(self):
@@ -82,7 +82,7 @@ class ResourceController:
         if resources:
             for config in resources:
                 try:
-                    result = self.create_resource(config["config"])
+                    result = await self.create_resource(config["config"])
                     self._add_resource(config["name"], result)
                     print("Loaded", self.kind, config["name"])
                 except Exception as e:
@@ -117,7 +117,7 @@ class PydanticResourceController(ResourceController):
         super().__init__(itl, cluster, group, version, kind)
         self.resource_cls = resource_cls
 
-    def create_resource(self, config):
+    async def create_resource(self, config):
         if "spec" not in config:
             raise ValueError("Config is missing required key: spec")
         return self.resource_cls(**config["spec"])
