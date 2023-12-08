@@ -150,7 +150,7 @@ class ClusterOperations:
         url = f"{self.database.endpoint_url}/{self.database.name}/resources/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.patch(url, json=config) as response:
-                return await response.json()
+                return await response.read()
 
     async def update_resource(self, config):
         name = config["metadata"]["name"]

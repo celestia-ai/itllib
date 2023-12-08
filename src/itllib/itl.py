@@ -701,8 +701,11 @@ class Itl:
         for queue in self._downstream_queues.values():
             queue.put_nowait(None)
 
+        close_tasks = []
         for stream in self._downstreams.values():
-            stream.close()
+            close_tasks.append(stream.close())
 
         for stream in self._upstreams.values():
-            stream.close()
+            close_tasks.append(stream.close())
+
+        asyncio.gather(*close_tasks)

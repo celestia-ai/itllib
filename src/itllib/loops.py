@@ -35,11 +35,11 @@ class LoopOperations:
 
     @property
     def connect_url(self):
-        return f"ws://{self.endpoint_url}/loop/{self.loop_name}/connect"
+        return f"wss://{self.endpoint_url}/loop/{self.loop_name}/connect"
 
     @property
     def send_url(self):
-        return f"http://{self.endpoint_url}/loop/{self.loop_name}/send"
+        return f"https://{self.endpoint_url}/loop/{self.loop_name}/send"
 
 
 class StreamOperations:
