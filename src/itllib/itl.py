@@ -471,15 +471,6 @@ class Itl:
             except Exception as e:
                 print(f"Error in message processing: {traceback.format_exc()}")
 
-        for queue in self._downstream_queues.values():
-            self._connection_looper.call_soon_threadsafe(queue.put_nowait, None)
-
-        for stream in self._downstreams.values():
-            self._connection_looper.call_soon_threadsafe(stream.close)
-
-        for stream in self._upstreams.values():
-            self._connection_looper.call_soon_threadsafe(stream.close)
-
     async def _post_stream_message(self, url, message):
         # call HTTP POST on key, passing message as data
         async with aiohttp.ClientSession() as session:
@@ -706,3 +697,12 @@ class Itl:
             if self._stop:
                 break
             task()
+
+        for queue in self._downstream_queues.values():
+            queue.put_nowait(None)
+
+        for stream in self._downstreams.values():
+            stream.close()
+
+        for stream in self._upstreams.values():
+            stream.close()
