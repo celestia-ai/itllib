@@ -15,7 +15,8 @@ dependencies = [
     "websockets",
     "boto3",
     "aiohttp",
-    "pydantic"
+    "pydantic",
+    "requests"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
