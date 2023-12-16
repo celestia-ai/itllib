@@ -52,8 +52,8 @@ class ResourceController:
                     self._add_resource(pending.name, result)
                     print("Created", f"{self.kind}/{pending.name}")
                 else:
-                    result = old_resource
-                    await self.update_resource(result, config)
+                    result = await self.update_resource(old_resource, config)
+                    self._add_resource(name, result)
                     print("Reconfigured", f"{self.kind}/{pending.name}")
 
                 await op.accept()
@@ -66,11 +66,10 @@ class ResourceController:
         raise ValueError("create_resource not implemented")
 
     async def update_resource(self, resource, config):
-        name = config["metadata"]["name"]
         result = await self.create_resource(config)
         if result == None:
             raise ValueError("create_resource returned None for", config)
-        self._add_resource(name, result)
+        return result
 
     async def delete_resource(self, resource):
         pass
