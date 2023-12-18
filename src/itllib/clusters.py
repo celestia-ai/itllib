@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import traceback
 import aiohttp
 import json
 from urllib.parse import urlparse
@@ -51,7 +52,7 @@ def merge(old_spec, patch):
 class DatabaseOperations:
     def __init__(self, secret):
         self.name = secret["spec"]["databaseName"]
-        self.endpoint_url = secret["spec"]["secretBasicAuth"]["endpoint"]
+        self.endpoint_url = "https://" + secret["spec"]["secretBasicAuth"]["endpoint"]
         self.username = secret["spec"]["secretBasicAuth"]["username"]
         self.password = secret["spec"]["secretBasicAuth"]["password"]
         self.notifier = secret["spec"]["notifier"]
@@ -80,7 +81,7 @@ class ClusterOperations:
         }
         params["prefix"] = self.prefix
 
-        route_url = self.database.notifier + f"/clusters/routes/{self.database.name}"
+        route_url = self.database.notifier + f"/routes/{self.database.name}"
         async with aiohttp.ClientSession() as session:
             async with session.post(route_url, params=params) as response:
                 return response.status
@@ -92,7 +93,7 @@ class ClusterOperations:
         }
         params["prefix"] = self.prefix
 
-        route_url = self.database.notifier + f"/clusters/routes/{self.database.name}"
+        route_url = self.database.notifier + f"/routes/{self.database.name}"
         async with aiohttp.ClientSession() as session:
             async with session.delete(route_url, params=params) as response:
                 return response.status
@@ -127,9 +128,14 @@ class ClusterOperations:
         if utctime:
             params["utctime"] = utctime
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                return await response.json()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    return await response.json()
+        except Exception as e:
+            # print stack track
+            traceback.print_exc()
+            raise e
 
     async def read_resource(self, group, version, kind, name):
         if not name.startswith(self.prefix):

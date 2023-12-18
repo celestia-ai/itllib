@@ -176,7 +176,10 @@ class Itl:
             name = config["name"]
             database = config["database"]
             stream = config.get("eventStream", None)
-            stream_obj = self._streams[stream]
+            if stream:
+                stream_obj = self._streams[stream]
+            else:
+                stream_obj = None
             prefix = config.get("prefix", None)
             self._clusters[name] = ClusterOperations(
                 self._databases[database], stream, stream_obj, prefix=prefix
@@ -406,13 +409,14 @@ class Itl:
             self._controllers.setdefault(cluster, []).append(func)
 
             async def check_queue():
+                print("checking queue")
                 for queued_op in await cluster_obj.read_queue(
                     group, version, kind, name
                 ):
+                    print("found op:", queued_op)
                     asyncio.create_task(controller_wrapper(**queued_op))
 
-            self._start_ephemeral_tasks.append((check_queue, ()))
-
+            self.onconnect(check_queue)
             return func
 
         return decorator
@@ -687,7 +691,8 @@ class Itl:
         self._looper = asyncio.get_event_loop()
         tasks = []
         for cluster in self._clusters.values():
-            tasks.append(cluster.create())
+            # tasks.append(cluster.create())
+            pass
 
         await self._connect()
         await asyncio.gather(*tasks)

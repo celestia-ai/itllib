@@ -16,7 +16,8 @@ dependencies = [
     "boto3",
     "aiohttp",
     "pydantic",
-    "requests"
+    "requests",
+    "fire"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
