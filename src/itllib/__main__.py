@@ -116,9 +116,28 @@ class ConfigUpdater:
             asyncio.run(ClusterOperations(dbOps, stream, streamObj, "").create())
             clusters.append(cluster_data)
 
+    def dump_endpoints(self, config="./config.yaml", secrets="./secrets"):
+        itl = Itl()
+        itl.apply_config(config, secrets)
+
+        result = {}
+
+        for name, stream in itl._streams.items():
+            result.setdefault("streams", {})[name] = {
+                "post": stream.send_url,
+                "websocket": stream.connect_url,
+            }
+
+        for name, db in itl._databases.items():
+            result.setdefault("databases", {})[name] = {
+                "url": f"{db.endpoint_url}/{db.name}",
+            }
+
+        print(yaml.dump(result))
+
 
 class Configurator:
-    update_config = ConfigUpdater()
+    config = ConfigUpdater()
 
     def create_loop(self, id, endpoint, name, secrets="./secrets"):
         os.makedirs(secrets, exist_ok=True)
