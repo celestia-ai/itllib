@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 from contextlib import contextmanager
 import os
 from urllib.parse import urlparse
@@ -8,6 +9,7 @@ import fire
 import yaml
 
 from .itl import Itl
+from .clusters import ClusterOperations
 
 
 @contextmanager
@@ -75,9 +77,13 @@ class ConfigUpdater:
         if database not in itl._databases:
             raise ValueError(f"Could not find database {database} in {secrets}")
 
-        database_name = itl._databases[database].name
-        notifier = itl._databases[database].notifier
-        endpoint = itl._databases[database].endpoint_url
+        dbOps = itl._databases[database]
+        if stream:
+            if stream not in itl._streams:
+                raise ValueError(f"Could not find stream {stream} in {secrets}")
+            streamObj = itl._streams.get(stream)
+        else:
+            streamObj = None
 
         with edit_config(config) as config_data:
             cluster_data = {
@@ -102,10 +108,12 @@ class ConfigUpdater:
                     )
                     return
 
+                asyncio.run(ClusterOperations(dbOps, stream, streamObj, "").create())
                 cluster.clear()
                 cluster.update(cluster_data)
                 return
 
+            asyncio.run(ClusterOperations(dbOps, stream, streamObj, "").create())
             clusters.append(cluster_data)
 
 
