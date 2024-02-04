@@ -5,6 +5,7 @@ import threading
 import typing
 from glob import glob
 import traceback
+from urllib.parse import urlparse
 
 import websockets
 import json
@@ -12,9 +13,26 @@ import aiohttp
 import yaml
 import requests
 
+from itllib.resources import (
+    ResourcePile,
+    ClientResource,
+    ApiKeyResource,
+    GroupResource,
+    LoopResource,
+    ResourceReference,
+    ResourceResolver,
+    StreamResource,
+    ClusterResource,
+)
+
 from .piles import BucketOperations, PileOperations
-from .clusters import DatabaseOperations, ClusterOperations
-from .loops import LoopOperations, StreamOperations
+from .clusters import ClusterOperations
+from .loops import (
+    ConnectionInfo,
+    LoopOperations,
+    StreamConnectionInfo,
+    StreamOperations,
+)
 
 
 class Namespace:
@@ -38,34 +56,8 @@ def _get_argument_type_hints(func):
     return argument_type_hints
 
 
-def collect_secrets(secrets_dir):
-    bucket_keys = {}
-    result = {}
-    for path in glob(f"{secrets_dir}/*.json"):
-        with open(path) as inp:
-            secret_data = json.load(inp)
-
-        secret_name = secret_data["metadata"]["name"]
-        if secret_name in bucket_keys:
-            raise ValueError(f"Duplicate key name: {secret_name}")
-
-        result[secret_name] = secret_data
-
-    for path in glob(f"{secrets_dir}/*.yaml"):
-        with open(path) as inp:
-            secret_data = yaml.safe_load(inp)
-
-        secret_name = secret_data["metadata"]["name"]
-        if secret_name in bucket_keys:
-            raise ValueError(f"Duplicate key name: {secret_name}")
-
-        result[secret_name] = secret_data
-
-    return result
-
-
 class Itl:
-    def __init__(self) -> None:
+    def __init__(self, *configs, client=None) -> None:
         # User-specified handlers
         self._data_handlers = {}
         self._controllers = {}
@@ -83,10 +75,9 @@ class Itl:
 
         # Resources
         self._secrets = {}
-        self._streams = {}
+        self._streams: dict[str, StreamOperations] = {}
         self._buckets = {}
         self._piles = {}
-        self._databases = {}
         self._clusters: dict[str, ClusterOperations] = {}
         self._loops: dict[str, LoopOperations] = {}
 
@@ -99,94 +90,49 @@ class Itl:
         self._start_ephemeral_tasks = []
         self._post_connection_tasks = []
 
-    def apply_config(self, config, secrets):
-        if isinstance(config, str):
-            with open(config) as inp:
-                config = yaml.safe_load(inp)
-        config = config["spec"]
+        self._resource_pile = ResourcePile()
+        self._resolver = ResourceResolver(self._resource_pile)
+        self._keys = {}
 
-        self._update_secrets(secrets)
-        self.update_loops(config.get("loops", []))
-        self.update_streams(config.get("streams", []))
-        self.update_buckets(config.get("buckets", []))
-        self.update_piles(config.get("piles", []))
-        self.update_databases(config.get("databases", []))
-        self.update_clusters(config.get("clusters", []))
+        self._apply_config(*configs, client=client)
 
-    def _update_secrets(self, secrets_dir):
-        # TODO: update affected resources
-        self._secrets.update(collect_secrets(secrets_dir))
+    def _apply_config(self, *files, client=None):
+        self._resource_pile.add(*files)
+        self._resolver = ResourceResolver(self._resource_pile)
 
-        for secretName, secret in self._secrets.items():
-            if secret["apiVersion"] != "itllib/v1":
-                continue
-            if "spec" not in secret:
-                continue
+        # Get apikeys for the client
+        client_ref = ResourceReference("Client", client)
+        client_resource = self._resolver.get_resource_by_reference(client_ref)
+        assert isinstance(client_resource, ClientResource)
+        client_id = client_resource.id(self._resolver)
 
-            kind = secret["kind"]
-            spec = secret["spec"]
+        for apikey in self._resolver.apikeys_for_client(client_id):
+            remote = apikey.get_remote(self._resolver)
+            self._keys[remote] = apikey.key(self._resolver)
 
-            if kind == "LoopSecret":
-                loopName = secret["metadata"]["name"]
-                self._loops[loopName] = LoopOperations(spec)
-            elif kind == "DatabaseSecret":
-                clusterName = secret["metadata"]["name"]
-                self._databases[clusterName] = DatabaseOperations(secret)
-            elif kind == "BucketSecret":
-                bucketName = secret["metadata"]["name"]
-                self._buckets[bucketName] = BucketOperations(spec)
-
-    def update_loops(self, loops):
-        for loop in loops:
-            name = loop["name"]
-            secret = loop["secret"]
-            self._loops[name] = LoopOperations(self._secrets[secret]["spec"])
-
-    def update_streams(self, streams):
-        for stream in streams:
-            name = stream["name"]
-            loop = stream["loop"]
-            key = stream.get("key", name)
-            group = stream.get("group", None)
-            self._streams[name] = StreamOperations(
-                self._loops[loop], key=key, group=group
-            )
-
-    def update_buckets(self, buckets):
-        for bucket in buckets:
-            name = bucket["name"]
-            key = bucket["secret"]
-            self._buckets[name] = BucketOperations(self._secrets[key]["spec"])
-
-    def update_piles(self, piles):
-        for pile in piles:
-            name = pile["name"]
-            bucket = pile["bucket"]
-            prefix = pile.get("prefix", None)
-            self._piles[name] = PileOperations(self._buckets[bucket], prefix=prefix)
-
-    def update_databases(self, databases):
-        for database in databases:
-            name = database["name"]
-            secret = database["secret"]
-            self._databases[name] = DatabaseOperations(self._secrets[secret])
-
-    def update_clusters(self, clusters):
-        for config in clusters:
-            name = config["name"]
-            database = config["database"]
-            stream = config.get("eventStream", None)
-            if stream:
-                stream_obj = self._streams[stream]
-            else:
-                stream_obj = None
-            prefix = config.get("prefix", None)
-            self._clusters[name] = ClusterOperations(
-                self._databases[database], stream, stream_obj, prefix=prefix
-            )
-
-    def attach_cluster_prefix(self, cluster, name):
-        return self._clusters[cluster].prefix + name
+        for resource in self._resource_pile.compiled_resources.values():
+            if isinstance(resource, LoopResource):
+                remote = apikey.get_remote(self._resolver)
+                connection_info = resource.connection_info(self._resolver)
+                self._loops[resource.name] = LoopOperations(
+                    connection_info, self._keys[remote]
+                )
+            elif isinstance(resource, StreamResource):
+                remote = apikey.get_remote(self._resolver)
+                connection_info = resource.connection_info(self._resolver)
+                self._streams[resource.name] = StreamOperations(
+                    connection_info, self._keys[remote]
+                )
+            elif isinstance(resource, ClusterResource):
+                remote = apikey.get_remote(self._resolver)
+                connection_info = resource.connection_info(self._resolver)
+                self._clusters[resource.name] = ClusterOperations(
+                    connection_info, self._keys[remote]
+                )
+                self._streams["cluster/" + resource.name] = StreamOperations(
+                    StreamConnectionInfo(None, connection_info.connect_info),
+                    self._keys[remote],
+                )
 
     def attach_pile_prefix(self, pile, name):
         return self._piles[pile].prefix + name
@@ -225,73 +171,39 @@ class Itl:
 
         return pile_ops.delete(key)
 
-    async def resource_create(self, cluster, data, attach_prefix=False):
-        if attach_prefix:
-            data = data.copy()
-            data["metadata"]["name"] = (
-                self._clusters[cluster].prefix + data["metadata"]["name"]
-            )
+    async def cluster_create(self, cluster, data):
         return await self._clusters[cluster].create_resource(data)
-        # Remember to update the underlying functions
-        # To call the REST APIs rather than the database directly
 
-    async def resource_read_all(
+    async def cluster_read_all(
         self, cluster, group=None, version=None, kind=None, name=None, utctime=None
     ):
         return await self._clusters[cluster].read_all_resources(
             group, version, kind, name, utctime
         )
 
-    async def resource_read(
-        self, cluster, group, version, kind, name, attach_prefix=False
-    ):
-        if attach_prefix:
-            name = self._clusters[cluster].prefix + name
+    async def cluster_read(self, cluster, group, version, kind, name):
         return await self._clusters[cluster].read_resource(group, version, kind, name)
 
-    async def resource_patch(self, cluster, data, attach_prefix=False):
-        if attach_prefix:
-            data = data.copy()
-            data["metadata"]["name"] = (
-                self._clusters[cluster].prefix + data["metadata"]["name"]
-            )
+    async def cluster_patch(self, cluster, data):
         return await self._clusters[cluster].patch_resource(data)
 
-    async def resource_update(self, cluster, data, attach_prefix=False):
-        if attach_prefix:
-            data = data.copy()
-            data["metadata"]["name"] = (
-                self._clusters[cluster].prefix + data["metadata"]["name"]
-            )
+    async def cluster_update(self, cluster, data):
         return await self._clusters[cluster].update_resource(data)
 
-    async def resource_apply(self, cluster, data, attach_prefix=False):
-        if attach_prefix:
-            data = data.copy()
-            data["metadata"]["name"] = (
-                self._clusters[cluster].prefix + data["metadata"]["name"]
-            )
+    async def cluster_apply(self, cluster, data):
         return await self._clusters[cluster].apply_resource(data)
 
-    async def resource_delete(
-        self, cluster, group, version, kind, name, attach_prefix=False
-    ):
-        if attach_prefix:
-            name = self._clusters[cluster].prefix + name
+    async def cluster_delete(self, cluster, group, version, kind, name):
         return await self._clusters[cluster].delete_resource(group, version, kind, name)
 
-    def resource_controller(
-        self, cluster, group, version, kind, name, validate=True, attach_prefix=False
-    ):
-        if attach_prefix:
-            name = self._clusters[cluster].prefix + name
+    def cluster_controller(self, cluster, group, version, kind, name, validate=True):
         cluster_obj = self._clusters[cluster]
         return cluster_obj.control_resource(
             group, version, kind, name, validate=validate
         )
         # yield controller
 
-    def _get_url(self, identifier):
+    def _get_url(self, identifier) -> str:
         if identifier in self._streams:
             return self._streams[identifier].connect_url
         else:
@@ -360,18 +272,13 @@ class Itl:
         kind=None,
         name=None,
         validate=True,
-        attach_prefix=False,
     ):
-        if attach_prefix:
-            name = self._clusters[cluster].prefix + name
-
         cluster_obj = self._clusters[cluster]
-        stream = cluster_obj.stream
-        database = cluster_obj.database.name
+        stream = "cluster/" + cluster
 
         def decorator(func):
             async def controller_wrapper(*args, **event):
-                operations = self.resource_controller(
+                operations = self.cluster_controller(
                     cluster,
                     event["group"],
                     event["version"],
@@ -391,12 +298,6 @@ class Itl:
             async def event_handler(*args, **event):
                 if event["event"] != "queue":
                     return
-
-                if cluster_obj.prefix:
-                    if not event["name"].startswith(cluster_obj.prefix):
-                        return
-                if event["database"] != database:
-                    return
                 if group and event["group"] != group:
                     return
                 if version and event["version"] != version:
@@ -409,11 +310,9 @@ class Itl:
             self._controllers.setdefault(cluster, []).append(func)
 
             async def check_queue():
-                print("checking queue")
                 for queued_op in await cluster_obj.read_queue(
                     group, version, kind, name
                 ):
-                    print("found op:", queued_op)
                     asyncio.create_task(controller_wrapper(**queued_op))
 
             self.onconnect(check_queue)
@@ -538,9 +437,9 @@ class Itl:
         state.message = None
 
         if identifier not in self._streams:
-            self._streams[identifier] = StreamOperations(
-                None, None, connect_url=identifier
-            )
+            raise NotImplementedError("Streams must be defined in the config")
+
+        apikey = self._streams[identifier].apikey
 
         async def send_message():
             state.message = (
@@ -592,7 +491,7 @@ class Itl:
                         asyncio.create_task(asyncio.sleep(0)),
                     ]
 
-                ws_url = self._get_url(identifier)
+                ws_url = self._get_url(identifier) + "/apikey/" + apikey
                 async with websockets.connect(ws_url) as websocket:
                     backoff_time = 0
                     self._streams[identifier].socket = websocket
@@ -690,9 +589,6 @@ class Itl:
     async def _start_routine(self):
         self._looper = asyncio.get_event_loop()
         tasks = []
-        for cluster in self._clusters.values():
-            # tasks.append(cluster.create())
-            pass
 
         await self._connect()
         await asyncio.gather(*tasks)

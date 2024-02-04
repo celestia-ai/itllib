@@ -1,53 +1,57 @@
+from dataclasses import dataclass
+from typing import Optional
 import boto3
 import re
 from urllib.parse import urlparse
 
 
-def split_s3_url(url):
-    # Parse the URL
-    parsed_url = urlparse(url)
+@dataclass(frozen=True)
+class ConnectionInfo:
+    base: str
+    path: str
 
-    # Get the netloc (hostname and port)
-    netloc = parsed_url.netloc
 
-    # Remove the port number from the netloc
-    hostname = netloc.split(":")[0]
-    port = netloc.split(":")[1]
+@dataclass(frozen=True)
+class LoopConnectionInfo:
+    rest_info: ConnectionInfo
+    ws_info: ConnectionInfo
 
-    # Construct the endpoint URL
-    endpoint_url = f"{parsed_url.scheme}://{hostname}:{port}"
+    def stream_connection_info(self, stream_id, group=None):
+        if group:
+            send_path = f"{self.rest_info.path}/stream/{stream_id}/group/{group}"
+            connect_path = f"{self.ws_info.path}/stream/{stream_id}/group/{group}"
+        else:
+            send_path = f"{self.rest_info.path}/stream/{stream_id}"
+            connect_path = f"{self.ws_info.path}/stream/{stream_id}"
 
-    # Split the path to retrieve the bucket name and object key
-    path_parts = parsed_url.path.lstrip("/").split("/", 1)
-    bucket_name = path_parts[0]
-    object_key = path_parts[1] if len(path_parts) > 1 else None
+        return StreamConnectionInfo(
+            send_info=ConnectionInfo(self.rest_info.base, send_path),
+            connect_info=ConnectionInfo(self.ws_info.base, connect_path),
+        )
 
-    return endpoint_url, bucket_name, object_key
+
+@dataclass(frozen=True)
+class StreamConnectionInfo:
+    send_info: Optional[ConnectionInfo]
+    connect_info: Optional[ConnectionInfo]
 
 
 class LoopOperations:
-    def __init__(self, secret):
-        loop_name = secret["loopName"]
-        self.endpoint_url = secret["secretBasicAuth"]["endpoint"]
-        auth_username = secret["secretBasicAuth"]["username"]
-        auth_password = secret["secretBasicAuth"]["password"]
-        self.loop_name = loop_name
+    def __init__(self, connection_info: LoopConnectionInfo, apikey):
+        self.connect_info = connection_info
+        self.apikey = apikey
 
-    @property
-    def connect_url(self):
-        return f"wss://{self.endpoint_url}/loop/{self.loop_name}/connect"
-
-    @property
-    def send_url(self):
-        return f"https://{self.endpoint_url}/loop/{self.loop_name}/send"
+    def get_stream(self, stream_id, group=None):
+        stream_connection_info = self.connect_info.stream_connection_info(
+            stream_id, group
+        )
+        return StreamOperations(stream_connection_info, self.apikey)
 
 
 class StreamOperations:
-    def __init__(self, loop, key, group=None, connect_url=None):
-        self.loop = loop
-        self.key = key
-        self.group = group
-        self._connect_url = connect_url
+    def __init__(self, connection_info: StreamConnectionInfo, apikey):
+        self.connection_info = connection_info
+        self.apikey = apikey
         self.socket = None
 
     async def send(self, str):
@@ -58,13 +62,11 @@ class StreamOperations:
 
     @property
     def connect_url(self):
-        if self._connect_url:
-            return self._connect_url
-        elif self.group != None:
-            return f"{self.loop.connect_url}/{self.key}/{self.group}"
-        else:
-            return f"{self.loop.connect_url}/{self.key}"
+        return (
+            self.connection_info.connect_info.base
+            + self.connection_info.connect_info.path
+        )
 
     @property
     def send_url(self):
-        return f"{self.loop.send_url}/{self.key}"
+        return self.connection_info.send_info.base + self.connection_info.send_info.path

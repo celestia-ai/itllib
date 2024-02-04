@@ -73,11 +73,11 @@ class ConfigUpdater:
         self, name, database, stream=None, config="./config.yaml", secrets="./secrets"
     ):
         itl = Itl()
-        itl.apply_config(config, secrets)
-        if database not in itl._databases:
+        itl._apply_config(config, secrets)
+        if database not in itl._old_clusters:
             raise ValueError(f"Could not find database {database} in {secrets}")
 
-        dbOps = itl._databases[database]
+        dbOps = itl._old_clusters[database]
         if stream:
             if stream not in itl._streams:
                 raise ValueError(f"Could not find stream {stream} in {secrets}")
@@ -118,7 +118,7 @@ class ConfigUpdater:
 
     def dump_endpoints(self, config="./config.yaml", secrets="./secrets"):
         itl = Itl()
-        itl.apply_config(config, secrets)
+        itl._apply_config(config, secrets)
 
         result = {}
 
@@ -128,7 +128,7 @@ class ConfigUpdater:
                 "websocket": stream.connect_url,
             }
 
-        for name, db in itl._databases.items():
+        for name, db in itl._old_clusters.items():
             result.setdefault("databases", {})[name] = {
                 "url": f"{db.endpoint_url}/{db.name}",
             }
