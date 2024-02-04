@@ -17,10 +17,14 @@ from itllib.clusters import ClusterConnectionInfo
 from itllib.loops import LoopConnectionInfo, ConnectionInfo, StreamConnectionInfo
 
 DEFAULT_REMOTES = {
+    "https://resources.thatone.ai": {
+        "clusters": "https://clusters.thatone.ai",
+        "loops": "https://streams.thatone.ai",
+    },
     "https://test-resources.thatone.ai": {
         "clusters": "https://test-clusters.thatone.ai",
         "loops": "https://test-streams.thatone.ai",
-    }
+    },
 }
 
 
