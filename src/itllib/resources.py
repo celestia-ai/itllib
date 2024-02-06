@@ -456,6 +456,7 @@ class LoopResource(Resource):
             config.get("spec", {}),
             {"ownerId", "loopId", "remote"},
             {
+                "dacTags",
                 "dacDefaultRead",
                 "dacDefaultWrite",
                 "dacDefaultExecute",
@@ -513,6 +514,7 @@ class StreamResource(Resource):
             config.get("spec", {}),
             {"loopId", "streamId", "remote"},
             {
+                "dacTags",
                 "dacWhitelistRead",
                 "dacWhitelistWrite",
                 "dacWhitelistExecute",
@@ -550,6 +552,7 @@ class ClusterResource(Resource):
             config.get("spec", {}),
             {"ownerId", "clusterId", "remote"},
             {
+                "dacTags",
                 "dacDefaultRead",
                 "dacDefaultWrite",
                 "dacDefaultExecute",
@@ -797,6 +800,7 @@ class ResourceSpec(Spec):
             config,
             {"name", "owner"},
             {
+                "dacTags",
                 "dacDefaultRead",
                 "dacDefaultWrite",
                 "dacDefaultExecute",
@@ -820,6 +824,7 @@ class ResourceSpec(Spec):
                 "remote": Remote(resourceKey=ResourceReference("Loop", config["name"])),
                 "ownerId": ClientId(config["owner"]),
                 "loopId": LoopId(config["name"]),
+                "dacTags": config.get("dacTags", []),
                 "dacDefaultRead": [
                     GroupId(x) for x in config.get("dacDefaultRead", [])
                 ],
@@ -859,6 +864,7 @@ class ResourceSpec(Spec):
             config,
             {"name", "loop"},
             {
+                "dacTags",
                 "dacWhitelistRead",
                 "dacWhitelistWrite",
                 "dacWhitelistExecute",
@@ -881,6 +887,7 @@ class ResourceSpec(Spec):
                 ),
                 "loopId": LoopId(config["loop"]),
                 "streamId": config["name"],
+                "dacTags": config.get("dacTags", []),
                 "dacWhitelistRead": [
                     GroupId(x) for x in config.get("dacWhitelistRead", [])
                 ],
@@ -911,6 +918,7 @@ class ResourceSpec(Spec):
             config,
             {"name", "owner"},
             {
+                "dacTags",
                 "dacDefaultRead",
                 "dacDefaultWrite",
                 "dacDefaultExecute",
@@ -936,6 +944,7 @@ class ResourceSpec(Spec):
                 ),
                 "ownerId": ClientId(config["owner"]),
                 "clusterId": ClusterId(config["name"]),
+                "dacTags": config.get("dacTags", []),
                 "dacDefaultRead": [
                     GroupId(x) for x in config.get("dacDefaultRead", [])
                 ],
