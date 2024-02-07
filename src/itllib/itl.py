@@ -254,7 +254,15 @@ class Itl:
         self._start_persistent_tasks[identifier] = task
         asyncio.create_task(self._attach_stream(identifier))
 
-    def ondata(self, stream):
+    def ondata(self, stream=None, loop=None, streamId=None):
+        if stream == None:
+            loop_info = self._loops[loop]
+            stream = f'stream/{loop}/{streamId}'
+            if stream not in self._streams:
+                self._streams[stream] = StreamOperations(
+                    loop_info.connect_info.stream_connection_info(streamId),
+                    loop_info.apikey,
+                )
         if stream not in self._upstreams:
             self._ensure_stream_connection([stream])
 
@@ -380,7 +388,16 @@ class Itl:
             async with session.post(url, data=json.dumps(message)) as response:
                 response.raise_for_status()
 
-    def stream_send(self, key, message):
+    def stream_send(self, key=None, message=None, loop=None, streamId=None):
+        if key == None:
+            loop_info = self._loops[loop]
+            key = f'stream/{loop}/{streamId}'
+            if key not in self._streams:
+                self._streams[key] = StreamOperations(
+                    loop_info.connect_info.stream_connection_info(streamId),
+                    loop_info.apikey,
+                )
+
         if key not in self._streams and (
             key.startswith("http://") or key.startswith("https://")
         ):
