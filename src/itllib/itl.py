@@ -92,7 +92,7 @@ class Itl:
 
         self._resource_pile = ResourcePile()
         self._resolver = ResourceResolver(self._resource_pile)
-        self._keys = {}
+        self._keys = defaultdict(lambda: None)
 
         self._apply_config(*configs, client=client)
 
@@ -101,30 +101,31 @@ class Itl:
         self._resolver = ResourceResolver(self._resource_pile)
 
         # Get apikeys for the client
-        client_ref = ResourceReference("Client", client)
-        client_resource = self._resolver.get_resource_by_reference(client_ref)
-        assert isinstance(client_resource, ClientResource)
-        client_id = client_resource.id(self._resolver)
+        if client != None:
+            client_ref = ResourceReference("Client", client)
+            client_resource = self._resolver.get_resource_by_reference(client_ref)
+            assert isinstance(client_resource, ClientResource)
+            client_id = client_resource.id(self._resolver)
 
-        for apikey in self._resolver.apikeys_for_client(client_id):
-            remote = apikey.get_remote(self._resolver)
-            self._keys[remote] = apikey.key(self._resolver)
+            for apikey in self._resolver.apikeys_for_client(client_id):
+                remote = apikey.get_remote(self._resolver)
+                self._keys[remote] = apikey.key(self._resolver)
 
         for resource in self._resource_pile.compiled_resources.values():
             if isinstance(resource, LoopResource):
-                remote = apikey.get_remote(self._resolver)
+                remote = resource.get_remote(self._resolver)
                 connection_info = resource.connection_info(self._resolver)
                 self._loops[resource.name] = LoopOperations(
                     connection_info, self._keys[remote]
                 )
             elif isinstance(resource, StreamResource):
-                remote = apikey.get_remote(self._resolver)
+                remote = resource.get_remote(self._resolver)
                 connection_info = resource.connection_info(self._resolver)
                 self._streams[resource.name] = StreamOperations(
                     connection_info, self._keys[remote]
                 )
             elif isinstance(resource, ClusterResource):
-                remote = apikey.get_remote(self._resolver)
+                remote = resource.get_remote(self._resolver)
                 connection_info = resource.connection_info(self._resolver)
                 self._clusters[resource.name] = ClusterOperations(
                     connection_info, self._keys[remote]
@@ -508,7 +509,10 @@ class Itl:
                         asyncio.create_task(asyncio.sleep(0)),
                     ]
 
-                ws_url = self._get_url(identifier) + "/apikey/" + apikey
+                ws_url = self._get_url(identifier)
+                if apikey:
+                     ws_url = ws_url + "/apikey/" + apikey
+
                 async with websockets.connect(ws_url) as websocket:
                     backoff_time = 0
                     self._streams[identifier].socket = websocket

@@ -73,6 +73,10 @@ class ClusterOperations:
             connection_info.configure_info.base + connection_info.configure_info.path
         )
         self.apikey = apikey
+        if apikey:
+            self.apikey_param = {"apikey": apikey}
+        else:
+            self.apikey_param = {}
 
     async def create_resource(self, config):
         name = config["metadata"]["name"]
@@ -82,13 +86,13 @@ class ClusterOperations:
         async with aiohttp.ClientSession() as session:
             # pass apikey as query parameter
             async with session.post(
-                url, json=config, params={"apikey": self.apikey}
+                url, json=config, params=self.apikey_param
             ) as response:
                 return await response.json()
 
     async def read_all_resources(self, group, version, kind, name, utctime):
         url = f"{self.endpoint_url}/config"
-        params = {"apikey": self.apikey}
+        params = self.apikey_param.copy()
         if group:
             params["group"] = group
         if version:
@@ -112,7 +116,7 @@ class ClusterOperations:
     async def read_resource(self, group, version, kind, name):
         url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params={"apikey": self.apikey}) as response:
+            async with session.get(url, params=self.apikey_param) as response:
                 return await response.json()
 
     async def patch_resource(self, config):
@@ -122,7 +126,7 @@ class ClusterOperations:
         url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
             async with session.patch(
-                url, json=config, params={"apikey": self.apikey}
+                url, json=config, params=self.apikey_param
             ) as response:
                 return await response.read()
 
@@ -133,7 +137,7 @@ class ClusterOperations:
         url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}?create=false"
         async with aiohttp.ClientSession() as session:
             async with session.put(
-                url, json=config, params={"apikey": self.apikey}
+                url, json=config, params=self.apikey_param
             ) as response:
                 return await response.json()
 
@@ -146,7 +150,7 @@ class ClusterOperations:
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             async with session.put(
-                url, headers=headers, data=data, params={"apikey": self.apikey}
+                url, headers=headers, data=data, params=self.apikey_param
             ) as response:
                 text = await response.text()
                 # return await response.json()
@@ -155,14 +159,14 @@ class ClusterOperations:
     async def delete_resource(self, group, version, kind, name):
         url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
-            async with session.delete(url, params={"apikey": self.apikey}) as response:
+            async with session.delete(url, params=self.apikey_param) as response:
                 return await response.json()
 
     async def read_queue(
         self, group=None, version=None, kind=None, name=None, utctime=None
     ):
         url = f"{self.endpoint_url}/queue"
-        params = {"apikey": self.apikey}
+        params = self.apikey_param.copy()
         if group:
             params["group"] = group
         if version:
@@ -182,13 +186,13 @@ class ClusterOperations:
         url = f"{self.endpoint_url}/claim/{group}/{version}/{kind}/{name}"
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, params={"apikey": self.apikey}) as response:
+            async with session.post(url, params=self.apikey_param) as response:
                 return await response.json()
 
     async def unlock_resource(self, group, version, kind, name):
         url = f"{self.endpoint_url}/release-claim/{group}/{version}/{kind}/{name}"
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, params={"apikey": self.apikey}) as response:
+            async with session.post(url, params=self.apikey_param) as response:
                 return await response.json()
 
     async def resolve_resource(
@@ -201,7 +205,7 @@ class ClusterOperations:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url, json=data, params={"apikey": self.apikey}
+                url, json=data, params=self.apikey_param
             ) as response:
                 return await response.json()
 
