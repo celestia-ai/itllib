@@ -474,7 +474,7 @@ class LoopResource(Resource):
         self.parent_ref_or_id = ResourceIdRef("Client", config["spec"]["ownerId"])
         self.remote = config["spec"]["remote"]
 
-    def resource_ids(self) -> ResourceIdRef:
+    def resource_ids(self) -> Generator[ResourceIdRef, None, None]:
         yield ResourceIdRef("Loop", self.config["spec"]["loopId"])
 
     def connection_info(self, resolver: "ResourceResolver"):
@@ -538,7 +538,21 @@ class StreamResource(Resource):
 
     def connection_info(self, resolver: "ResourceResolver") -> StreamConnectionInfo:
         stream_id = resolver.link(self.config["spec"]["streamId"])
-        loop_info = self.loop(resolver).connection_info(resolver)
+
+        if "loopId" in self.config["spec"]:
+            loop_id = self.config["spec"]["loopId"]
+
+            base = resolver.get_remote_config(self.remote)["loops"]
+            rest_base, ws_base = _split_base_uri(base)
+            path = "/loop/" + loop_id
+
+            loop_info = LoopConnectionInfo(
+                rest_info=ConnectionInfo(rest_base, path),
+                ws_info=ConnectionInfo(ws_base, path),
+            )
+        else:
+            loop_info = self.loop(resolver).connection_info(resolver)
+
         group = None
         return loop_info.stream_connection_info(stream_id, group)
 
@@ -1006,6 +1020,63 @@ class ResourcePile:
         self.config_sources = new_config_sources
         self.compiled_resources = new_compiled_resources
 
+    def read_resource_config_docs(
+        self, source, configs, read_fully=False
+    ) -> Generator[LocatedConfig, None, None]:
+        for i, config in enumerate(configs):
+            if read_fully:
+                yield LocatedConfig(source, i, config)
+                continue
+
+            if "apiVersion" not in config:
+                print(f"Config in file {source} is missing apiVersion")
+                continue
+            if not isinstance(config["apiVersion"], str):
+                print(
+                    f"Config in file {source} has invalid apiVersion. It should be a string."
+                )
+                continue
+            if not re.match(r"^[a-z0-9.-]+/[a-z0-9.-]+$", config["apiVersion"]):
+                print(
+                    f"Config in file {source} has invalid apiVersion. It should be in the format group/version. Group and version should be lowercase alphanumeric characters, dots or dashes."
+                )
+                continue
+            if "kind" not in config:
+                print(f"Config in file {source} is missing kind")
+                continue
+            if not isinstance(config["kind"], str):
+                print(
+                    f"Config in file {source} has invalid kind. It should be a string."
+                )
+                continue
+            if "metadata" not in config:
+                print(f"Config in file {source} is missing metadata")
+                continue
+            if not isinstance(config["metadata"], dict):
+                print(
+                    f"Config in file {source} has invalid metadata. It should be a dict."
+                )
+                continue
+            if "name" not in config["metadata"]:
+                print(f"Config in file {source} is missing metadata.name")
+                continue
+            if not isinstance(config["metadata"]["name"], str):
+                print(
+                    f"Config in file {source} has invalid metadata.name. It should be a string."
+                )
+                continue
+
+            if config["apiVersion"] != "thatone.ai/v1":
+                print(
+                    f"Skipping config in {source} with apiVersion {config['apiVersion']}."
+                )
+                continue
+            if config["kind"] not in CONFIG_KINDS:
+                print(f"Skipping config in {source} with kind {config['kind']}.")
+                continue
+
+            yield LocatedConfig(source, i, config)
+
     def read_resource_configs_file(
         self, file, read_fully=False
     ) -> Generator[LocatedConfig, None, None]:
@@ -1018,60 +1089,77 @@ class ResourcePile:
                 raise e
             return
 
-        for i, config in enumerate(configs):
-            if read_fully:
-                yield LocatedConfig(file, i, config)
-                continue
+        yield from self.read_resource_config_docs(file, configs)
 
-            if "apiVersion" not in config:
-                print(f"Config in file {file} is missing apiVersion")
-                continue
-            if not isinstance(config["apiVersion"], str):
-                print(
-                    f"Config in file {file} has invalid apiVersion. It should be a string."
-                )
-                continue
-            if not re.match(r"^[a-z0-9.-]+/[a-z0-9.-]+$", config["apiVersion"]):
-                print(
-                    f"Config in file {file} has invalid apiVersion. It should be in the format group/version. Group and version should be lowercase alphanumeric characters, dots or dashes."
-                )
-                continue
-            if "kind" not in config:
-                print(f"Config in file {file} is missing kind")
-                continue
-            if not isinstance(config["kind"], str):
-                print(f"Config in file {file} has invalid kind. It should be a string.")
-                continue
-            if "metadata" not in config:
-                print(f"Config in file {file} is missing metadata")
-                continue
-            if not isinstance(config["metadata"], dict):
-                print(
-                    f"Config in file {file} has invalid metadata. It should be a dict."
-                )
-                continue
-            if "name" not in config["metadata"]:
-                print(f"Config in file {file} is missing metadata.name")
-                continue
-            if not isinstance(config["metadata"]["name"], str):
-                print(
-                    f"Config in file {file} has invalid metadata.name. It should be a string."
-                )
-                continue
+    def read_resource_configs_url(
+        self, url, read_fully=False
+    ) -> Generator[LocatedConfig, None, None]:
+        parsed_url = urlparse(url)
 
-            if config["apiVersion"] != "thatone.ai/v1":
-                print(
-                    f"Skipping config in {file} with apiVersion {config['apiVersion']}."
-                )
-                continue
-            if config["kind"] not in CONFIG_KINDS:
-                print(f"Skipping config in {file} with kind {config['kind']}.")
-                continue
+        if parsed_url.netloc == "github.com":
+            path_parts = parsed_url.path.split("/", maxsplit=5)
+            if len(path_parts) < 6:
+                print(f"Invalid github link {url}")
+                return
+            print(path_parts)
+            _, user, project, link_type, branch, path_rest = path_parts
 
-            yield LocatedConfig(file, i, config)
+            if link_type == "blob":
+                contents = httpx.get(
+                    f"https://raw.githubusercontent.com/{user}/{project}/{branch}/{path_rest}"
+                ).text
+                configs = list(yaml.safe_load_all(contents))
+                yield from self.read_resource_config_docs(
+                    url, configs, read_fully=read_fully
+                )
+            elif link_type == "tree":
+                files = httpx.get(
+                    f"https://api.github.com/repos/{user}/{project}/contents/{path_rest}?ref={branch}&recursive=1"
+                ).json()
+                for file in files:
+                    if file["type"] != "file":
+                        continue
+                    if not file["name"].endswith(".yaml"):
+                        continue
+                    contents = httpx.get(file["download_url"]).text
+                    configs = list(yaml.safe_load_all(contents))
+                    yield from self.read_resource_config_docs(
+                        file["download_url"], configs, read_fully=read_fully
+                    )
+            else:
+                print(f"Invalid github link {url}")
+        elif parsed_url.netloc == "gist.github.com":
+            _, user, path_parts = parsed_url.path.split("/", maxsplit=2)
+            id_parts = path_parts.split("/")
+            if len(id_parts) == 2:
+                gist_id, revision = id_parts
+                download_url = f"https://gist.githubusercontent.com/{user}/{gist_id}/raw/{revision}"
+            elif len(id_parts) == 1:
+                gist_id = id_parts[0]
+                download_url = (
+                    f"https://gist.githubusercontent.com/{user}/{gist_id}/raw"
+                )
+            else:
+                print(f"Invalid gist link {url}")
+                return
+            contents = httpx.get(download_url).text
+            configs = list(yaml.safe_load_all(contents))
+            yield from self.read_resource_config_docs(
+                download_url, configs, read_fully=read_fully
+            )
+
+        else:
+            contents = httpx.get(url).text
+            configs = list(yaml.safe_load_all(contents))
+            yield from self.read_resource_config_docs(
+                url, configs, read_fully=read_fully
+            )
 
     def read_resource_configs(self, dirpath, read_fully=False) -> List[LocatedConfig]:
         """Read the given file and return its contents."""
+        if dirpath.startswith("http:") or dirpath.startswith("https:"):
+            return list(self.read_resource_configs_url(dirpath, read_fully=read_fully))
+
         dirpath = os.path.realpath(dirpath)
         if os.path.isfile(dirpath):
             return list(self.read_resource_configs_file(dirpath, read_fully=read_fully))
@@ -1175,7 +1263,7 @@ class ResourcePile:
                 for resource in generated_resources:
                     key = resource.reference
                     if key in new_compiled_resources:
-                        print("skipping", key, "since it was already generated")
+                        print("Skipping", key, "since it was already generated")
                         continue
                     new_compiled_resources[key] = resource
             except ValueError as e:
@@ -1208,23 +1296,27 @@ class ResourcePile:
             reference = target_resource.reference
             if reference in prior_configs:
                 location = prior_configs[reference]
-                updated_configs[location.path][location.index] = target_resource.link(
-                    resolver
-                )
-                updated_yaml_files.add(location.path)
-            else:
-                if target_resource.kind == "ApiKey":
-                    target_file = resolver.create_secret_path(target_resource.config)
-                else:
-                    target_file = resolver.create_resource_path(target_resource.config)
-
-                try:
-                    updated_configs[target_file].append(target_resource.link(resolver))
-                except ValueError as e:
-                    print("Failed to generate config for", reference)
-                    error = True
+                if not location.path.startswith(
+                    "http://"
+                ) and not location.path.startswith("https://"):
+                    updated_configs[location.path][
+                        location.index
+                    ] = target_resource.link(resolver)
+                    updated_yaml_files.add(location.path)
                     continue
-                updated_yaml_files.add(target_file)
+
+            if target_resource.kind == "ApiKey":
+                target_file = resolver.create_secret_path(target_resource.config)
+            else:
+                target_file = resolver.create_resource_path(target_resource.config)
+
+            try:
+                updated_configs[target_file].append(target_resource.link(resolver))
+            except ValueError as e:
+                print("Failed to generate config for", reference)
+                error = True
+                continue
+            updated_yaml_files.add(target_file)
 
         if error:
             raise ValueError()
@@ -1248,6 +1340,7 @@ class ResourcePile:
                     default_flow_style=False,
                     sort_keys=False,
                     explicit_end=False,
+                    explicit_start=True,
                 )
 
         for resource in self.compiled_resources.values():
@@ -1269,6 +1362,7 @@ class ResourcePile:
                     default_flow_style=False,
                     sort_keys=False,
                     explicit_end=False,
+                    explicit_start=True,
                 )
 
 
