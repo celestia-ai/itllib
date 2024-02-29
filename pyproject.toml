@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itllib"
-version = "0.0.9"
+version = "0.0.10"
 authors = [
   { name="That Dev", email="sunny@thatone.ai" },
 ]
@@ -17,7 +17,9 @@ dependencies = [
     "aiohttp",
     "pydantic",
     "requests",
-    "fire"
+    "fire",
+    "pyyaml",
+    "httpx"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
