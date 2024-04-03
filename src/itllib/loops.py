@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 import boto3
 import re
@@ -9,6 +9,11 @@ from urllib.parse import urlparse
 class ConnectionInfo:
     base: str
     path: str
+    params: dict = field(default_factory=dict)
+
+    @property
+    def url(self):
+        return self.base + self.path
 
 
 @dataclass(frozen=True)

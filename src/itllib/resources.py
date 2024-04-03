@@ -593,13 +593,18 @@ class ClusterResource(Resource):
         base_uris = resolver.get_remote_config(self.remote)
 
         configure_base = _split_base_uri(base_uris["clusters"])[0]
-        configure_path = "/cluster/" + cluster_id
+
+        def configure_info_fn(from_cluster) -> ConnectionInfo:
+            if from_cluster == cluster_id or from_cluster == None:
+                return ConnectionInfo(configure_base, "/cluster/" + cluster_id)
+            return ConnectionInfo(configure_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id})
 
         connect_base = _split_base_uri(base_uris["loops"])[1]
         connect_path = "/cluster/" + cluster_id
 
         return ClusterConnectionInfo(
-            configure_info=ConnectionInfo(configure_base, configure_path),
+            cluster_id=cluster_id,
+            configure_info_fn=configure_info_fn,
             connect_info=ConnectionInfo(connect_base, connect_path),
         )
 
@@ -1249,6 +1254,8 @@ class ResourcePile:
             return [StreamResource(located_config.config)]
         elif kind == "Cluster":
             return [ClusterResource(located_config.config)]
+        elif kind == "Remote":
+            return []
         else:
             print("Unknown config kind", kind)
             raise ValueError(f"Unknown config kind {kind} in {located_config.path}")

@@ -143,11 +143,11 @@ class Itl:
                     StreamConnectionInfo(None, connection_info.connect_info),
                     self._keys[remote],
                 )
+    
+    # def __getitem__(self, kindName):
+    #     return self._resolver.get_resource_by_reference(ResourceReference(*kindName))
 
-    def attach_pile_prefix(self, pile, name):
-        return self._piles[pile].prefix + name
-
-    def object_download(self, pile, key=None, notification=None, attach_prefix=False):
+    def _object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
             raise ValueError("Exactly one of key or event must be provided")
         if key != None and notification != None:
@@ -163,7 +163,7 @@ class Itl:
 
         return pile_ops.get(key)
 
-    def object_upload(
+    def _object_upload(
         self, pile, key, file_descriptor, metadata={}, attach_prefix=False
     ):
         pile_ops = self._piles[pile]
@@ -173,7 +173,7 @@ class Itl:
 
         return pile_ops.put(key, file_descriptor, metadata)
 
-    def object_delete(self, pile, key=None, attach_prefix=False):
+    def _object_delete(self, pile, key=None, attach_prefix=False):
         pile_ops = self._piles[pile]
 
         if attach_prefix:
@@ -185,14 +185,17 @@ class Itl:
         return await self._clusters[cluster].create_resource(data)
 
     async def cluster_read_all(
-        self, cluster, group=None, version=None, kind=None, name=None, utctime=None
+        self, from_cluster, cluster=None, group=None, version=None, kind=None, name=None, fiber=None, utctime=None
     ):
-        return await self._clusters[cluster].read_all_resources(
-            group, version, kind, name, utctime
+        return await self._clusters[from_cluster].read_all_resources(
+            group, version, kind, name, fiber, utctime, cluster=cluster
         )
 
-    async def cluster_read(self, cluster, group, version, kind, name):
-        return await self._clusters[cluster].read_resource(group, version, kind, name)
+    async def cluster_read(self, cluster, group, version, kind, name, fiber=None):
+        return await self._clusters[cluster].read_resource(group, version, kind, name, fiber)
+    
+    async def cluster_read_queue(self, from_cluster, cluster=None, group=None, version=None, kind=None, name=None, fiber=None):
+        return await self._clusters[from_cluster].read_queue(group, version, kind, name, fiber, cluster=cluster)
 
     async def cluster_patch(self, cluster, data):
         return await self._clusters[cluster].patch_resource(data)
@@ -202,14 +205,20 @@ class Itl:
 
     async def cluster_apply(self, cluster, data):
         return await self._clusters[cluster].apply_resource(data)
+    
+    async def cluster_post(self, from_cluster, data, cluster=None):
+        return await self._clusters[from_cluster].post_resource(data, cluster=cluster)
 
-    async def cluster_delete(self, cluster, group, version, kind, name):
-        return await self._clusters[cluster].delete_resource(group, version, kind, name)
+    async def cluster_delete(self, from_cluster, group, version, kind, name, fiber=None, cluster=None):
+        return await self._clusters[from_cluster].delete_resource(group, version, kind, name, fiber, cluster=cluster)
+    
+    async def cluster_unlock(self, cluster, group, version, kind, name, fiber=None, from_cluster=None):
+        return await self._clusters[cluster].unlock_resource(group, version, kind, name, fiber, from_cluster=from_cluster)
 
-    def cluster_controller(self, cluster, group, version, kind, name, validate=True):
-        cluster_obj = self._clusters[cluster]
+    def cluster_controller(self, from_cluster, group, version, kind, name, fiber=None, validate=True, cluster=None):
+        cluster_obj = self._clusters[from_cluster]
         return cluster_obj.control_resource(
-            group, version, kind, name, validate=validate
+            cluster or from_cluster, group, version, kind, name, fiber, validate=validate
         )
         # yield controller
 
@@ -289,6 +298,7 @@ class Itl:
         version=None,
         kind=None,
         name=None,
+        fiber='resource',
         validate=True,
     ):
         cluster_obj = self._clusters[cluster]
@@ -302,7 +312,9 @@ class Itl:
                     event["version"],
                     event["kind"],
                     event["name"],
+                    event["fiber"],
                     validate=validate,
+                    cluster=event["cluster"],
                 )
                 try:
                     async with operations:
@@ -327,15 +339,17 @@ class Itl:
                     return
                 if kind and event["kind"] != kind:
                     return
+                if name and event["name"] != name:
+                    return
+                if fiber and event["fiber"] != fiber:
+                    return
 
                 asyncio.create_task(controller_wrapper(*args, **event))
 
             self._controllers.setdefault(cluster, []).append(func)
 
             async def check_queue():
-                for queued_op in await cluster_obj.read_queue(
-                    group, version, kind, name
-                ):
+                for queued_op in await self.cluster_read_queue(cluster, group=group, version=version, kind=kind, name=name, fiber=fiber):
                     asyncio.create_task(controller_wrapper(**queued_op))
 
             self.onconnect(check_queue)

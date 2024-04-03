@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import traceback
+from typing import Callable
 import aiohttp
 import json
 from urllib.parse import urlparse
@@ -9,7 +10,8 @@ from .loops import ConnectionInfo, StreamOperations
 
 @dataclass(frozen=True)
 class ClusterConnectionInfo:
-    configure_info: ConnectionInfo
+    cluster_id: str
+    configure_info_fn: ConnectionInfo
     connect_info: ConnectionInfo
 
 
@@ -65,34 +67,43 @@ def _remove_scheme(url):
     else:
         return url
 
+def _infer_fiber(config):
+    if 'metadata' in config:
+        if 'fiber' in config['metadata']:
+            return config['metadata']['fiber']
+        if 'optimizer' in config['metadata']:
+            return 'experiment'
+    return 'resource'
 
 class ClusterOperations:
     def __init__(self, connection_info: ClusterConnectionInfo, apikey):
         self.connection_info = connection_info
-        self.endpoint_url = (
-            connection_info.configure_info.base + connection_info.configure_info.path
-        )
         self.apikey = apikey
-        if apikey:
-            self.apikey_param = {"apikey": apikey}
-        else:
-            self.apikey_param = {}
+        self.cluster_id = connection_info.cluster_id
 
     async def create_resource(self, config):
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}"
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
         async with aiohttp.ClientSession() as session:
             # pass apikey as query parameter
             async with session.post(
-                url, json=config, params=self.apikey_param
+                url, json=config, params=params
             ) as response:
                 return await response.json()
 
-    async def read_all_resources(self, group, version, kind, name, utctime):
-        url = f"{self.endpoint_url}/config"
-        params = self.apikey_param.copy()
+    async def read_all_resources(self, group, version, kind, name, fiber, utctime, cluster=None):
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/config"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        params["from_cluster"] = self.cluster_id
+        if cluster:
+            params["cluster"] = cluster
         if group:
             params["group"] = group
         if version:
@@ -101,6 +112,8 @@ class ClusterOperations:
             params["kind"] = kind
         if name:
             params["name"] = name
+        if fiber:
+            params["fiber"] = fiber
         if utctime:
             params["utctime"] = utctime
 
@@ -109,24 +122,33 @@ class ClusterOperations:
                 async with session.get(url, params=params) as response:
                     return await response.json()
         except Exception as e:
-            # print stack track
             traceback.print_exc()
             raise e
 
-    async def read_resource(self, group, version, kind, name):
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
+    async def read_resource(self, group, version, kind, name, fiber, cluster=None):
+        cluster = cluster or self.cluster_id
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        if fiber:
+            params["fiber"] = fiber
+        params["from_cluster"] = self.cluster_id
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=self.apikey_param) as response:
+            async with session.get(url, params=params) as response:
                 return await response.json()
 
     async def patch_resource(self, config):
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
         async with aiohttp.ClientSession() as session:
             async with session.patch(
-                url, json=config, params=self.apikey_param
+                url, json=config, params=params
             ) as response:
                 return await response.read()
 
@@ -134,10 +156,13 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}?create=false"
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=false"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
         async with aiohttp.ClientSession() as session:
             async with session.put(
-                url, json=config, params=self.apikey_param
+                url, json=config, params=params
             ) as response:
                 return await response.json()
 
@@ -145,28 +170,56 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}?create=true"
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=true"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
         data = json.dumps(config)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             async with session.put(
-                url, headers=headers, data=data, params=self.apikey_param
+                url, headers=headers, data=data, params=params
             ) as response:
                 text = await response.text()
                 # return await response.json()
                 return json.loads(text)
-
-    async def delete_resource(self, group, version, kind, name):
-        url = f"{self.endpoint_url}/config/{group}/{version}/{kind}/{name}"
+    
+    async def post_resource(self, config, cluster=None):
+        name = config["metadata"]["name"]
+        group, version = config["apiVersion"].split("/")
+        kind = config["kind"]
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        params["from_cluster"] = self.cluster_id
         async with aiohttp.ClientSession() as session:
-            async with session.delete(url, params=self.apikey_param) as response:
+            async with session.post(
+                url, json=config, params=params
+            ) as response:
+                return await response.json()
+
+    async def delete_resource(self, group, version, kind, name, fiber, cluster=None):
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
+        params = {}
+        params['apikey'] = self.apikey
+        if fiber:
+            params["fiber"] = fiber
+        params["from_cluster"] = self.cluster_id
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(url, params=params) as response:
                 return await response.json()
 
     async def read_queue(
-        self, group=None, version=None, kind=None, name=None, utctime=None
+        self, group=None, version=None, kind=None, name=None, fiber=None, utctime=None, cluster=None
     ):
-        url = f"{self.endpoint_url}/queue"
-        params = self.apikey_param.copy()
+        endpoint = self.connection_info.configure_info_fn(None)
+        url = f"{endpoint.url}/queue"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        if cluster:
+            params["cluster"] = cluster
         if group:
             params["group"] = group
         if version:
@@ -175,6 +228,8 @@ class ClusterOperations:
             params["kind"] = kind
         if name:
             params["name"] = name
+        if fiber:
+            params["fiber"] = fiber
         if utctime:
             params["timestamp"] = utctime
 
@@ -182,46 +237,69 @@ class ClusterOperations:
             async with session.get(url, params=params) as response:
                 return await response.json()
 
-    async def lock_resource(self, group, version, kind, name):
-        url = f"{self.endpoint_url}/claim/{group}/{version}/{kind}/{name}"
+    async def lock_resource(self, cluster, group, version, kind, name, fiber):
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/claim/{group}/{version}/{kind}/{name}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        params['from_cluster'] = self.cluster_id
+        if fiber:
+            params["fiber"] = fiber
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, params=self.apikey_param) as response:
+            async with session.post(url, params=params) as response:
                 return await response.json()
 
-    async def unlock_resource(self, group, version, kind, name):
-        url = f"{self.endpoint_url}/release-claim/{group}/{version}/{kind}/{name}"
+    async def unlock_resource(self, cluster, group, version, kind, name, fiber):
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/release-claim/{group}/{version}/{kind}/{name}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        params['from_cluster'] = self.cluster_id
+        if fiber:
+            params["fiber"] = fiber
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, params=self.apikey_param) as response:
+            async with session.post(url, params=params) as response:
                 return await response.json()
 
     async def resolve_resource(
-        self, group, version, kind, name, config, operations, delete=False, force=False
+        self, cluster, group, version, kind, name, fiber, config, operations, delete=False, force=False
     ):
-        url = f"{self.endpoint_url}/resolve-claim/{group}/{version}/{kind}/{name}?force={force}"
+        endpoint = self.connection_info.configure_info_fn(cluster)
+        url = f"{endpoint.url}/resolve-claim/{group}/{version}/{kind}/{name}?force={force}"
+        params = endpoint.params.copy()
+        params['apikey'] = self.apikey
+        params['from_cluster'] = self.cluster_id
+        if fiber:
+            params["fiber"] = fiber
+
         data = {"operations": operations, "delete": delete}
         if config != None:
             data["config"] = config
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url, json=data, params=self.apikey_param
+                url, json=data, params=params
             ) as response:
                 return await response.json()
 
-    def control_resource(self, group, version, kind, name, validate=False):
-        return BaseController(self, group, version, kind, name, validate=validate)
+    def control_resource(self, cluster, group, version, kind, name, fiber, validate=False):
+        return BaseController(self, cluster, group, version, kind, name, fiber, validate=validate)
+    
 
 
 class BaseController:
     def __init__(
-        self, config_ops: ClusterOperations, group, version, kind, name, validate=False
+        self, config_ops: ClusterOperations, cluster, group, version, kind, name, fiber, validate=False
     ):
         self.config_ops = config_ops
+        self.cluster = cluster
         self.group = group
         self.version = version
         self.kind = kind
         self.name = name
+        self.fiber = fiber
         self.validate = validate
 
         self.pending_ops = None
@@ -241,7 +319,7 @@ class BaseController:
 
     async def acquire_object(self):
         initial_ops = await self.config_ops.lock_resource(
-            self.group, self.version, self.kind, name=self.name
+            self.cluster, self.group, self.version, self.kind, name=self.name, fiber=self.fiber
         )
         self.locked = initial_ops != []
 
@@ -260,10 +338,12 @@ class BaseController:
             return
 
         await self.config_ops.resolve_resource(
+            self.cluster,
             self.group,
             self.version,
             self.kind,
             self.locked_config_name,
+            self.fiber,
             self.current_config,
             list(self.processed_op_ids),
             delete=self.delete_current,
@@ -287,10 +367,12 @@ class BaseController:
             )
 
         new_ops = await self.config_ops.resolve_resource(
+            self.cluster,
             self.group,
             self.version,
             self.kind,
             self.locked_config_name,
+            self.fiber,
             self.current_config,
             list(self.processed_op_ids),
             delete=self.delete_current,
@@ -341,7 +423,7 @@ class BaseController:
     async def get_current_config(self):
         if self.have_current_config == False:
             self.current_config = await self.config_ops.read_resource(
-                self.group, self.version, self.kind, self.locked_config_name
+                self.group, self.version, self.kind, self.locked_config_name, self.fiber,
             )
             self.have_current_config = True
 
@@ -359,7 +441,7 @@ class BaseController:
             self.delete_current = pendingOp.data["operation"] == "DELETE"
         else:
             self.delete_current = delete
-
+        
     async def reject(self, pendingOp):
         if pendingOp.data["id"] in self.processed_op_ids:
             raise ValueError(f"Operation {pendingOp.data['id']} already processed")
@@ -384,6 +466,14 @@ class PendingOperation:
             return merge(await self.old_config(), self.data["config"])
         elif self.data["operation"] == "REPLACE":
             return self.data["config"]
+        elif self.data["operation"] == "POST":
+            return None
+    
+    async def message(self):
+        if self.data["operation"] == "POST":
+            return self.data["config"]
+        else:
+            return None
 
     async def patch_config(self):
         return create_patch(await self.old_config(), await self.new_config())
@@ -400,6 +490,8 @@ class PendingOperation:
                 return True
             else:
                 return await self.old_config() != None
+        elif self.data["operation"] == "POST":
+            return True
         else:
             return False
 
