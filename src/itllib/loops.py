@@ -4,6 +4,8 @@ import boto3
 import re
 from urllib.parse import urlparse
 
+import websockets
+
 
 @dataclass(frozen=True)
 class ConnectionInfo:
@@ -57,7 +59,7 @@ class StreamOperations:
     def __init__(self, connection_info: StreamConnectionInfo, apikey):
         self.connection_info = connection_info
         self.apikey = apikey
-        self.socket = None
+        self.socket: websockets.WebSocketClientProtocol = None
 
     async def send(self, str):
         return await self.socket.send(str)
@@ -75,3 +77,7 @@ class StreamOperations:
     @property
     def send_url(self):
         return self.connection_info.send_info.base + self.connection_info.send_info.path
+    
+    async def close(self):
+        if self.socket:
+            await self.socket.close()

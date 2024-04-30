@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import copy
 from dataclasses import dataclass
 import traceback
 from typing import Callable
@@ -67,13 +68,15 @@ def _remove_scheme(url):
     else:
         return url
 
+
 def _infer_fiber(config):
-    if 'metadata' in config:
-        if 'fiber' in config['metadata']:
-            return config['metadata']['fiber']
-        if 'optimizer' in config['metadata']:
-            return 'experiment'
-    return 'resource'
+    if "metadata" in config:
+        if "fiber" in config["metadata"]:
+            return config["metadata"]["fiber"]
+        if "optimizer" in config["metadata"]:
+            return "experiment"
+    return "resource"
+
 
 class ClusterOperations:
     def __init__(self, connection_info: ClusterConnectionInfo, apikey):
@@ -88,20 +91,21 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         async with aiohttp.ClientSession() as session:
             # pass apikey as query parameter
-            async with session.post(
-                url, json=config, params=params
-            ) as response:
+            async with session.post(url, json=config, params=params) as response:
                 return await response.json()
 
-    async def read_all_resources(self, group, version, kind, name, fiber, utctime, cluster=None):
+    async def read_all_resources(
+        self, group, version, kind, name, fiber, utctime, cluster=None
+    ):
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/config"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
-        params["from_cluster"] = self.cluster_id
+        if self.apikey:
+            params["apikey"] = self.apikey
         if cluster:
             params["cluster"] = cluster
         if group:
@@ -122,7 +126,6 @@ class ClusterOperations:
                 async with session.get(url, params=params) as response:
                     return await response.json()
         except Exception as e:
-            traceback.print_exc()
             raise e
 
     async def read_resource(self, group, version, kind, name, fiber, cluster=None):
@@ -130,7 +133,8 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         if fiber:
             params["fiber"] = fiber
         params["from_cluster"] = self.cluster_id
@@ -145,11 +149,10 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         async with aiohttp.ClientSession() as session:
-            async with session.patch(
-                url, json=config, params=params
-            ) as response:
+            async with session.patch(url, json=config, params=params) as response:
                 return await response.read()
 
     async def update_resource(self, config):
@@ -159,11 +162,10 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=false"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         async with aiohttp.ClientSession() as session:
-            async with session.put(
-                url, json=config, params=params
-            ) as response:
+            async with session.put(url, json=config, params=params) as response:
                 return await response.json()
 
     async def apply_resource(self, config):
@@ -173,7 +175,8 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=true"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         data = json.dumps(config)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
@@ -183,27 +186,28 @@ class ClusterOperations:
                 text = await response.text()
                 # return await response.json()
                 return json.loads(text)
-    
-    async def post_resource(self, config, cluster=None):
+
+    async def post_resource(self, config):
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
+        cluster = config["metadata"].get("remote", self.cluster_id)
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         params["from_cluster"] = self.cluster_id
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=config, params=params
-            ) as response:
+            async with session.post(url, json=config, params=params) as response:
                 return await response.json()
 
     async def delete_resource(self, group, version, kind, name, fiber, cluster=None):
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = {}
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         if fiber:
             params["fiber"] = fiber
         params["from_cluster"] = self.cluster_id
@@ -212,12 +216,20 @@ class ClusterOperations:
                 return await response.json()
 
     async def read_queue(
-        self, group=None, version=None, kind=None, name=None, fiber=None, utctime=None, cluster=None
+        self,
+        group=None,
+        version=None,
+        kind=None,
+        name=None,
+        fiber=None,
+        utctime=None,
+        cluster=None,
     ):
         endpoint = self.connection_info.configure_info_fn(None)
         url = f"{endpoint.url}/queue"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
+        if self.apikey:
+            params["apikey"] = self.apikey
         if cluster:
             params["cluster"] = cluster
         if group:
@@ -241,8 +253,9 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/claim/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
-        params['from_cluster'] = self.cluster_id
+        if self.apikey:
+            params["apikey"] = self.apikey
+        params["from_cluster"] = self.cluster_id
         if fiber:
             params["fiber"] = fiber
 
@@ -254,8 +267,9 @@ class ClusterOperations:
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/release-claim/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
-        params['from_cluster'] = self.cluster_id
+        if self.apikey:
+            params["apikey"] = self.apikey
+        params["from_cluster"] = self.cluster_id
         if fiber:
             params["fiber"] = fiber
 
@@ -264,13 +278,24 @@ class ClusterOperations:
                 return await response.json()
 
     async def resolve_resource(
-        self, cluster, group, version, kind, name, fiber, config, operations, delete=False, force=False
+        self,
+        cluster,
+        group,
+        version,
+        kind,
+        name,
+        fiber,
+        config,
+        operations,
+        delete=False,
+        force=False,
     ):
         endpoint = self.connection_info.configure_info_fn(cluster)
         url = f"{endpoint.url}/resolve-claim/{group}/{version}/{kind}/{name}?force={force}"
         params = endpoint.params.copy()
-        params['apikey'] = self.apikey
-        params['from_cluster'] = self.cluster_id
+        if self.apikey:
+            params["apikey"] = self.apikey
+        params["from_cluster"] = self.cluster_id
         if fiber:
             params["fiber"] = fiber
 
@@ -279,19 +304,28 @@ class ClusterOperations:
             data["config"] = config
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=data, params=params
-            ) as response:
+            async with session.post(url, json=data, params=params) as response:
                 return await response.json()
 
-    def control_resource(self, cluster, group, version, kind, name, fiber, validate=False):
-        return BaseController(self, cluster, group, version, kind, name, fiber, validate=validate)
-    
+    def control_resource(
+        self, cluster, group, version, kind, name, fiber, validate=False
+    ):
+        return BaseController(
+            self, cluster, group, version, kind, name, fiber, validate=validate
+        )
 
 
 class BaseController:
     def __init__(
-        self, config_ops: ClusterOperations, cluster, group, version, kind, name, fiber, validate=False
+        self,
+        config_ops: ClusterOperations,
+        cluster,
+        group,
+        version,
+        kind,
+        name,
+        fiber,
+        validate=False,
     ):
         self.config_ops = config_ops
         self.cluster = cluster
@@ -319,7 +353,12 @@ class BaseController:
 
     async def acquire_object(self):
         initial_ops = await self.config_ops.lock_resource(
-            self.cluster, self.group, self.version, self.kind, name=self.name, fiber=self.fiber
+            self.cluster,
+            self.group,
+            self.version,
+            self.kind,
+            name=self.name,
+            fiber=self.fiber,
         )
         self.locked = initial_ops != []
 
@@ -336,6 +375,8 @@ class BaseController:
     async def release_current_object(self):
         if self.locked_config_name == None:
             return
+        
+        print('forcibly releasing config lock')
 
         await self.config_ops.resolve_resource(
             self.cluster,
@@ -378,7 +419,8 @@ class BaseController:
             delete=self.delete_current,
             force=force,
         )
-
+        
+        self.observed_op_ids = set()
         self.processed_op_ids = set()
 
         # If there are new operations for this object, queue them
@@ -407,7 +449,8 @@ class BaseController:
         # Return the next operation
         result = self.pending_ops.pop(0)
         self.observed_op_ids.add(result["id"])
-        return PendingOperation(self, result)
+        result = PendingOperation(self, result)
+        return result
 
     async def __anext__(self):
         result = await self.get_next_operation()
@@ -423,25 +466,31 @@ class BaseController:
     async def get_current_config(self):
         if self.have_current_config == False:
             self.current_config = await self.config_ops.read_resource(
-                self.group, self.version, self.kind, self.locked_config_name, self.fiber,
+                self.group,
+                self.version,
+                self.kind,
+                self.locked_config_name,
+                self.fiber,
+                cluster=self.cluster,
             )
             self.have_current_config = True
-
-        return self.current_config
+        
+        return copy.deepcopy(self.current_config)
 
     async def accept(self, pendingOp, new_config=None, delete=None):
         if pendingOp.data["id"] in self.processed_op_ids:
-            raise ValueError(f"Operation {pendingOp['id']} already processed")
+            raise ValueError(f"Operation {pendingOp.data['id']} already processed")
 
         self.processed_op_ids.add(pendingOp.data["id"])
 
-        self.current_config = new_config or await pendingOp.new_config()
+        if new_config != None or pendingOp.data["operation"] != "POST":
+            self.current_config = new_config or await pendingOp.new_config()
 
         if delete == None:
             self.delete_current = pendingOp.data["operation"] == "DELETE"
         else:
             self.delete_current = delete
-        
+
     async def reject(self, pendingOp):
         if pendingOp.data["id"] in self.processed_op_ids:
             raise ValueError(f"Operation {pendingOp.data['id']} already processed")
@@ -459,19 +508,19 @@ class PendingOperation:
 
     async def new_config(self):
         if self.data["operation"] == "CREATE":
-            return self.data["config"]
+            return copy.deepcopy(self.data["config"])
         elif self.data["operation"] == "DELETE":
             return None
         elif self.data["operation"] == "PATCH":
             return merge(await self.old_config(), self.data["config"])
         elif self.data["operation"] == "REPLACE":
-            return self.data["config"]
+            return copy.deepcopy(self.data["config"])
         elif self.data["operation"] == "POST":
-            return None
-    
+            return await self.controller.get_current_config()
+
     async def message(self):
         if self.data["operation"] == "POST":
-            return self.data["config"]
+            return copy.deepcopy(self.data["config"])
         else:
             return None
 

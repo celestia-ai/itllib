@@ -59,6 +59,14 @@ def _get_argument_type_hints(func):
 
     return argument_type_hints
 
+def _exec_callback(handler, args, kwargs):
+    try:
+        if inspect.iscoroutinefunction(handler):
+            asyncio.create_task(handler(*args, **kwargs))
+        else:
+            handler(*args, **kwargs)
+    except Exception as e:
+        print(f"Error in handler {handler.__name__}: {traceback.format_exc()}")
 
 class Itl:
     def __init__(self, *configs, client=None) -> None:
@@ -143,9 +151,9 @@ class Itl:
                     StreamConnectionInfo(None, connection_info.connect_info),
                     self._keys[remote],
                 )
-    
-    # def __getitem__(self, kindName):
-    #     return self._resolver.get_resource_by_reference(ResourceReference(*kindName))
+
+    def get_resource(self, kind, name):
+        return self._resolver.get_resource_by_reference(ResourceReference(kind, name))
 
     def _object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
@@ -185,17 +193,38 @@ class Itl:
         return await self._clusters[cluster].create_resource(data)
 
     async def cluster_read_all(
-        self, from_cluster, cluster=None, group=None, version=None, kind=None, name=None, fiber=None, utctime=None
+        self,
+        from_cluster,
+        cluster=None,
+        group=None,
+        version=None,
+        kind=None,
+        name=None,
+        fiber=None,
+        utctime=None,
     ):
         return await self._clusters[from_cluster].read_all_resources(
             group, version, kind, name, fiber, utctime, cluster=cluster
         )
 
-    async def cluster_read(self, cluster, group, version, kind, name, fiber=None):
-        return await self._clusters[cluster].read_resource(group, version, kind, name, fiber)
-    
-    async def cluster_read_queue(self, from_cluster, cluster=None, group=None, version=None, kind=None, name=None, fiber=None):
-        return await self._clusters[from_cluster].read_queue(group, version, kind, name, fiber, cluster=cluster)
+    async def cluster_read(self, from_cluster, group, version, kind, name, fiber=None, cluster=None):
+        return await self._clusters[from_cluster].read_resource(
+            group, version, kind, name, fiber, cluster=cluster
+        )
+
+    async def cluster_read_queue(
+        self,
+        from_cluster,
+        cluster=None,
+        group=None,
+        version=None,
+        kind=None,
+        name=None,
+        fiber=None,
+    ):
+        return await self._clusters[from_cluster].read_queue(
+            group, version, kind, name, fiber, cluster=cluster
+        )
 
     async def cluster_patch(self, cluster, data):
         return await self._clusters[cluster].patch_resource(data)
@@ -205,20 +234,44 @@ class Itl:
 
     async def cluster_apply(self, cluster, data):
         return await self._clusters[cluster].apply_resource(data)
-    
-    async def cluster_post(self, from_cluster, data, cluster=None):
-        return await self._clusters[from_cluster].post_resource(data, cluster=cluster)
 
-    async def cluster_delete(self, from_cluster, group, version, kind, name, fiber=None, cluster=None):
-        return await self._clusters[from_cluster].delete_resource(group, version, kind, name, fiber, cluster=cluster)
-    
-    async def cluster_unlock(self, cluster, group, version, kind, name, fiber=None, from_cluster=None):
-        return await self._clusters[cluster].unlock_resource(group, version, kind, name, fiber, from_cluster=from_cluster)
+    async def cluster_post(self, from_cluster, data):
+        return await self._clusters[from_cluster].post_resource(data)
 
-    def cluster_controller(self, from_cluster, group, version, kind, name, fiber=None, validate=True, cluster=None):
+    async def cluster_delete(
+        self, from_cluster, group, version, kind, name, fiber=None, cluster=None
+    ):
+        return await self._clusters[from_cluster].delete_resource(
+            group, version, kind, name, fiber, cluster=cluster
+        )
+
+    async def cluster_unlock(
+        self, from_cluster, group, version, kind, name, fiber=None, cluster=None
+    ):
+        return await self._clusters[from_cluster].unlock_resource(
+            cluster, group, version, kind, name, fiber
+        )
+
+    def cluster_controller(
+        self,
+        from_cluster,
+        group,
+        version,
+        kind,
+        name,
+        fiber=None,
+        validate=True,
+        cluster=None,
+    ):
         cluster_obj = self._clusters[from_cluster]
         return cluster_obj.control_resource(
-            cluster or from_cluster, group, version, kind, name, fiber, validate=validate
+            cluster or from_cluster,
+            group,
+            version,
+            kind,
+            name,
+            fiber,
+            validate=validate,
         )
         # yield controller
 
@@ -290,6 +343,69 @@ class Itl:
             return func
 
         return decorator
+    
+    def stream_attach(self, fn, stream=None, loop=None, streamId=None, key=None):
+        self.ondata(stream, loop, streamId, key)(fn)
+    
+    async def _schedule_disconnect_task_unsafe(self, stream_ops: StreamOperations, send_queue: asyncio.Queue):
+        if stream_ops:
+            await stream_ops.close()
+        if send_queue:
+            send_queue.put_nowait(None)
+
+    def stream_detach(self, key):
+        for stream in list(self._streams):
+            if key in self._data_handlers[stream]:
+                del self._data_handlers[stream][key]
+                if len(self._data_handlers[stream]) == 0:
+                    del self._data_handlers[stream]
+
+                    if stream in self._started_streams:
+                        self._started_streams.remove(stream)
+
+                    if stream in self._streams:
+                        stream_ops = self._streams[stream]
+                    else:
+                        stream_ops = None
+                    
+                    send_queue = self._downstream_queues.get(stream)
+
+                    # The stream isn't open, so we don't need to close it
+                    if stream not in self._start_persistent_tasks:
+                        continue
+                    
+                    del self._start_persistent_tasks[stream]
+
+                    # Check if the Itl is already running
+                    if self._connection_looper:
+                        self._connection_looper.call_soon_threadsafe(
+                            self._connection_tasks.put_nowait,
+                            (self._schedule_disconnect_task_unsafe, (stream_ops, send_queue), {})
+                        )
+                    
+
+    def onupdate(self, cluster, group=None, version=None, kind=None, name=None, fiber=None):
+        stream = "cluster/" + cluster
+
+        def decorator(func):
+            @self.ondata(stream)
+            async def update_handler(*args, **event):
+                if event["event"] not in ("put", "delete"):
+                    return
+                if group and event["group"] != group:
+                    return
+                if version and event["version"] != version:
+                    return
+                if kind and event["kind"] != kind:
+                    return
+                if name and event["name"] != name:
+                    return
+                if fiber and event["fiber"] != fiber:
+                    return
+            
+                await func(**event)
+        
+        return decorator
 
     def controller(
         self,
@@ -298,7 +414,7 @@ class Itl:
         version=None,
         kind=None,
         name=None,
-        fiber='resource',
+        fiber="resource",
         validate=True,
     ):
         cluster_obj = self._clusters[cluster]
@@ -349,13 +465,21 @@ class Itl:
             self._controllers.setdefault(cluster, []).append(func)
 
             async def check_queue():
-                for queued_op in await self.cluster_read_queue(cluster, group=group, version=version, kind=kind, name=name, fiber=fiber):
+                for queued_op in await self.cluster_read_queue(
+                    cluster,
+                    group=group,
+                    version=version,
+                    kind=kind,
+                    name=name,
+                    fiber=fiber,
+                ):
                     asyncio.create_task(controller_wrapper(**queued_op))
 
             self.onconnect(check_queue)
             return func
 
         return decorator
+    
 
     def onconnect(self, func):
         if self._callback_looper:
@@ -377,16 +501,8 @@ class Itl:
 
         return func
 
-    async def _process_upstream_messages(self):
-        def exec_callback(handler, args, kwargs):
-            try:
-                if inspect.iscoroutinefunction(handler):
-                    asyncio.create_task(handler(*args, **kwargs))
-                else:
-                    handler(*args, **kwargs)
-            except Exception as e:
-                print(f"Error in handler {handler.__name__}: {traceback.format_exc()}")
 
+    async def _process_upstream_messages(self):
         def process_message(identifier, serialized_data):
             message = json.loads(serialized_data)
             # TODO: Run all handlers in parallel
@@ -399,7 +515,7 @@ class Itl:
                         args = [message]
                         kwargs = {}
 
-                    exec_callback(handler, args, kwargs)
+                    _exec_callback(handler, args, kwargs)
 
         for fn, args in self._start_ephemeral_tasks:
             asyncio.create_task(fn(*args))
@@ -421,7 +537,7 @@ class Itl:
                 if isinstance(identifier, str):
                     process_message(identifier, serialized_data)
                 else:
-                    exec_callback(identifier, serialized_data, {})
+                    _exec_callback(identifier, serialized_data, {})
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -450,27 +566,10 @@ class Itl:
 
         self._ensure_stream_connection([stream])
 
-        if self._connection_looper:
-            self._connection_looper.call_soon_threadsafe(
-                self._downstream_queues[stream].put_nowait, message
-            )
-        else:
-            task = self._downstream_queues[stream].put, (message,)
-            self._connection_looper.call_soon_threadsafe(
-                self._downstream_queues[stream].put_nowait, task
-            )
+        self._connection_looper.call_soon_threadsafe(
+            self._downstream_queues[stream].put_nowait, message
+        )
 
-    def stream_send_sync(self, stream, message):
-        if self._started and self._stopped:
-            raise RuntimeError("Cannot send messages after itl has been stopped")
-
-        self._ensure_stream_connection([stream])
-
-        if self._connection_looper:
-            self._downstream_queues[stream].put_nowait(message)
-        else:
-            task = self._downstream_queues[stream].put, (message,)
-            self._downstream_queues[stream].put_nowait(task)
 
     def _requeue(self, identifier, message):
         if message == None:
@@ -502,6 +601,9 @@ class Itl:
             state.message = (
                 state.message or await self._downstream_queues[identifier].get()
             )
+
+            if state.message == None:
+                return False
 
             if self._stopped:
                 self._requeue(identifier, state.message)
@@ -583,6 +685,9 @@ class Itl:
                 pass
 
             if self._stopped:
+                return
+            
+            if not identifier in self._started_streams:
                 return
 
             # Backoff before reconnecting
@@ -684,7 +789,10 @@ class Itl:
             task = await self._connection_tasks.get()
             if self._stopped:
                 break
-            task()
+            if isinstance(task, tuple):
+                _exec_callback(*task)
+            else:
+                _exec_callback(task, [], {})
 
         for queue in self._downstream_queues.values():
             queue.put_nowait(None)

@@ -584,6 +584,10 @@ class ClusterResource(Resource):
         self.parent_ref_or_id = ResourceIdRef("Client", config["spec"]["ownerId"])
         self.remote = config["spec"]["remote"]
 
+    @property
+    def id(self):
+        return self.config["spec"]["clusterId"]
+
     def resource_ids(self):
         yield ResourceIdRef("Cluster", self.config["spec"]["clusterId"])
 
@@ -597,7 +601,9 @@ class ClusterResource(Resource):
         def configure_info_fn(from_cluster) -> ConnectionInfo:
             if from_cluster == cluster_id or from_cluster == None:
                 return ConnectionInfo(configure_base, "/cluster/" + cluster_id)
-            return ConnectionInfo(configure_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id})
+            return ConnectionInfo(
+                configure_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id}
+            )
 
         connect_base = _split_base_uri(base_uris["loops"])[1]
         connect_path = "/cluster/" + cluster_id
