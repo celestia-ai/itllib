@@ -376,6 +376,9 @@ class Itl:
                     
                     del self._start_persistent_tasks[stream]
 
+                    if ':' in stream:
+                        del self._streams[stream]
+
                     # Check if the Itl is already running
                     if self._connection_looper:
                         self._connection_looper.call_soon_threadsafe(
@@ -593,7 +596,11 @@ class Itl:
         state.message = None
 
         if identifier not in self._streams:
-            raise NotImplementedError("Streams must be defined in the config")
+            protocol = identifier.split(':')[0]
+            if protocol in ('stream', 'http', 'https', 'ws', 'wss'):
+                self._streams[identifier] = StreamOperations.from_uri(identifier)
+            else:
+                raise NotImplementedError("Streams must be defined in the config or be a valid URI.")
 
         apikey = self._streams[identifier].apikey
 

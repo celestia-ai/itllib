@@ -60,6 +60,28 @@ class StreamOperations:
         self.connection_info = connection_info
         self.apikey = apikey
         self.socket: websockets.WebSocketClientProtocol = None
+    
+    @classmethod
+    def from_uri(cls, uri, apikey=None):
+        if uri.startswith('ws://') or uri.startswith('wss://'):
+            connection_info = StreamConnectionInfo(
+                send_info=None,
+                connect_info=ConnectionInfo(uri, "", {}),
+            )
+            return cls(connection_info, apikey)
+        elif uri.startswith('http://') or uri.startswith('https://'):
+            connection_info = StreamConnectionInfo(
+                send_info=ConnectionInfo(uri, "", {}),
+                connect_info=None,
+            )
+            return cls(connection_info, apikey)
+        elif uri.startswith("stream://"):
+            base = uri[9:]
+            connection_info = StreamConnectionInfo(
+                send_info=ConnectionInfo('https://' + base, '', {}),
+                connect_info=ConnectionInfo('wss://' + base, '', {}),
+            )
+            return cls(connection_info, apikey)
 
     async def send(self, str):
         return await self.socket.send(str)

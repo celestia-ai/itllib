@@ -596,22 +596,18 @@ class ClusterResource(Resource):
 
         base_uris = resolver.get_remote_config(self.remote)
 
-        configure_base = _split_base_uri(base_uris["clusters"])[0]
+        connect_base = _split_base_uri(base_uris["clusters"])[0]
 
-        def configure_info_fn(from_cluster) -> ConnectionInfo:
+        def connection_info_fn(from_cluster) -> ConnectionInfo:
             if from_cluster == cluster_id or from_cluster == None:
-                return ConnectionInfo(configure_base, "/cluster/" + cluster_id)
+                return ConnectionInfo(connect_base, "/cluster/" + cluster_id)
             return ConnectionInfo(
-                configure_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id}
+                connect_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id}
             )
-
-        connect_base = _split_base_uri(base_uris["loops"])[1]
-        connect_path = "/cluster/" + cluster_id
 
         return ClusterConnectionInfo(
             cluster_id=cluster_id,
-            configure_info_fn=configure_info_fn,
-            connect_info=ConnectionInfo(connect_base, connect_path),
+            connection_info_fn=connection_info_fn,
         )
 
 

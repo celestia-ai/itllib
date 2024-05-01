@@ -12,8 +12,7 @@ from .loops import ConnectionInfo, StreamOperations
 @dataclass(frozen=True)
 class ClusterConnectionInfo:
     cluster_id: str
-    configure_info_fn: ConnectionInfo
-    connect_info: ConnectionInfo
+    connection_info_fn: Callable[[str], ConnectionInfo]
 
 
 def create_patch(old_spec, new_spec):
@@ -88,7 +87,7 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -101,7 +100,7 @@ class ClusterOperations:
     async def read_all_resources(
         self, group, version, kind, name, fiber, utctime, cluster=None
     ):
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/config"
         params = endpoint.params.copy()
         if self.apikey:
@@ -130,7 +129,7 @@ class ClusterOperations:
 
     async def read_resource(self, group, version, kind, name, fiber, cluster=None):
         cluster = cluster or self.cluster_id
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -146,7 +145,7 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -159,7 +158,7 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=false"
         params = endpoint.params.copy()
         if self.apikey:
@@ -172,7 +171,7 @@ class ClusterOperations:
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}?create=true"
         params = endpoint.params.copy()
         if self.apikey:
@@ -192,7 +191,7 @@ class ClusterOperations:
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
         cluster = config["metadata"].get("remote", self.cluster_id)
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -203,7 +202,7 @@ class ClusterOperations:
                 return await response.json()
 
     async def delete_resource(self, group, version, kind, name, fiber, cluster=None):
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = {}
         if self.apikey:
@@ -225,7 +224,7 @@ class ClusterOperations:
         utctime=None,
         cluster=None,
     ):
-        endpoint = self.connection_info.configure_info_fn(None)
+        endpoint = self.connection_info.connection_info_fn(None)
         url = f"{endpoint.url}/queue"
         params = endpoint.params.copy()
         if self.apikey:
@@ -250,7 +249,7 @@ class ClusterOperations:
                 return await response.json()
 
     async def lock_resource(self, cluster, group, version, kind, name, fiber):
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/claim/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -264,7 +263,7 @@ class ClusterOperations:
                 return await response.json()
 
     async def unlock_resource(self, cluster, group, version, kind, name, fiber):
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/release-claim/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
         if self.apikey:
@@ -290,7 +289,7 @@ class ClusterOperations:
         delete=False,
         force=False,
     ):
-        endpoint = self.connection_info.configure_info_fn(cluster)
+        endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/resolve-claim/{group}/{version}/{kind}/{name}?force={force}"
         params = endpoint.params.copy()
         if self.apikey:
