@@ -605,8 +605,15 @@ class ClusterResource(Resource):
                 connect_base, "/cluster/" + from_cluster, {"from_cluster": cluster_id}
             )
 
+        base = resolver.get_remote_config(self.remote)["loops"]
+        _, ws_base = _split_base_uri(base)
+        path = "/cluster/" + cluster_id
+
+        stream_info = ConnectionInfo(ws_base, path)
+
         return ClusterConnectionInfo(
             cluster_id=cluster_id,
+            stream_info=stream_info,
             connection_info_fn=connection_info_fn,
         )
 

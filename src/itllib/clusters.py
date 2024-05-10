@@ -13,6 +13,7 @@ from .loops import ConnectionInfo, StreamOperations
 class ClusterConnectionInfo:
     cluster_id: str
     connection_info_fn: Callable[[str], ConnectionInfo]
+    stream_info: ConnectionInfo
 
 
 def create_patch(old_spec, new_spec):
@@ -374,8 +375,8 @@ class BaseController:
     async def release_current_object(self):
         if self.locked_config_name == None:
             return
-        
-        print('forcibly releasing config lock')
+
+        print("Warning: forcibly releasing config lock")
 
         await self.config_ops.resolve_resource(
             self.cluster,
@@ -418,7 +419,7 @@ class BaseController:
             delete=self.delete_current,
             force=force,
         )
-        
+
         self.observed_op_ids = set()
         self.processed_op_ids = set()
 
@@ -473,10 +474,42 @@ class BaseController:
                 cluster=self.cluster,
             )
             self.have_current_config = True
-        
+
         return copy.deepcopy(self.current_config)
 
     async def accept(self, pendingOp, new_config=None, delete=None):
+        if new_config != None:
+            if not isinstance(new_config, dict):
+                raise ValueError("new_config must be a dictionary")
+            metadata = new_config.get("metadata", {})
+            if metadata.get("name") != self.name:
+                raise ValueError(
+                    "new_config must have the same name as the pending operation"
+                )
+            if new_config.get("apiVersion") != f"{self.group}/{self.version}":
+                raise ValueError(
+                    "new_config must have the same apiVersion as the pending operation"
+                )
+            if new_config.get("kind") != self.kind:
+                raise ValueError(
+                    "new_config must have the same kind as the pending operation"
+                )
+            if metadata.get("fiber", "resource") != self.fiber:
+                raise ValueError(
+                    "new_config must have the same fiber as the pending operation"
+                )
+            remote = metadata.get("remote")
+            if remote:
+                if remote != self.cluster:
+                    raise ValueError(
+                        "new_config must have the same cluster as the pending operation"
+                    )
+            else:
+                if self.cluster != self.config_ops.cluster_id:
+                    raise ValueError(
+                        "new_config must have the same cluster as the pending operation"
+                    )
+
         if pendingOp.data["id"] in self.processed_op_ids:
             raise ValueError(f"Operation {pendingOp.data['id']} already processed")
 
@@ -501,6 +534,23 @@ class PendingOperation:
     def __init__(self, controller: BaseController, data):
         self.controller = controller
         self.data = data
+        self.cluster = self.data["cluster"]
+        self.group = self.controller.group
+        self.version = self.controller.version
+        self.kind = self.controller.kind
+        self.name = self.controller.name
+        self.fiber = self.controller.fiber
+        self.remote = self.controller.config_ops.cluster_id
+
+    def identifier(self):
+        cluster = self.cluster
+        group = self.group
+        version = self.version
+        kind = self.kind
+        name = self.name
+        fiber = self.fiber
+
+        return f"{cluster}/{group}/{version}/{kind}/{name}/{fiber}"
 
     async def old_config(self):
         return await self.controller.get_current_config()

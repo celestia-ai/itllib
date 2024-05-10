@@ -16,6 +16,7 @@ import json
 import aiohttp
 import yaml
 import requests
+import httpx
 
 from itllib.resources import (
     ResourcePile,
@@ -59,14 +60,17 @@ def _get_argument_type_hints(func):
 
     return argument_type_hints
 
+
 def _exec_callback(handler, args, kwargs):
     try:
         if inspect.iscoroutinefunction(handler):
-            asyncio.create_task(handler(*args, **kwargs))
+            asyncio.create_task(handler(*args, **kwargs), name=handler.__name__)
         else:
             handler(*args, **kwargs)
     except Exception as e:
         print(f"Error in handler {handler.__name__}: {traceback.format_exc()}")
+        print("(Still running)")
+
 
 class Itl:
     def __init__(self, *configs, client=None) -> None:
@@ -148,12 +152,133 @@ class Itl:
                     connection_info, self._keys[remote]
                 )
                 self._streams["cluster/" + resource.name] = StreamOperations(
-                    StreamConnectionInfo(None, connection_info.connect_info),
+                    StreamConnectionInfo(None, connection_info.stream_info),
                     self._keys[remote],
                 )
 
     def get_resource(self, kind, name):
         return self._resolver.get_resource_by_reference(ResourceReference(kind, name))
+
+    def _get_cluster_uri(self, config: str, operation="config"):
+        """
+        Resolve a resource to a URL.
+
+        Args:
+            config: The identifier of the config resource. Format: "cluster/group/version/kind/name".
+                Examples: "cluster1", "cluster1/group1/v1", "cluster1/group1/v1/Kind1/name1".
+            operation: Can be 'config', 'queue', 'claim', 'release', 'updates'.
+
+        Returns:
+            The URL for the resource
+
+        Raises:
+            ValueError: If the resource is not found or an invalid operation is provided
+
+        """
+        if config.count("/") > 4:
+            raise ValueError(
+                f"Invalid config {config}: must follow the format 'cluster/group/version/kind/name'"
+            )
+        splitpt = config.index("/") if "/" in config else len(config)
+        cluster = config[:splitpt]
+        rest = config[splitpt:]
+
+        if cluster not in self._clusters:
+            raise ValueError(f"Cluster {cluster} not found")
+
+        if operation == "updates":
+            stream = "cluster/" + cluster
+            if stream not in self._streams:
+                raise ValueError(f"Stream {stream} not found")
+            stream_connnection_info = self._streams[stream].connection_info
+            return stream_connnection_info.connect_info.url
+
+        endpoint = self._clusters[cluster].connection_info.connection_info_fn(None)
+        if operation not in ["config", "queue", "claim", "release"]:
+            raise ValueError(
+                f"Invalid operation {operation}: must be one of 'config', 'queue', 'claim', 'release'"
+            )
+
+        return f"{endpoint.url}/{operation}{rest}"
+
+    def _get_stream_uri(self, stream, operation="stream"):
+        """
+        Resolve a resource to a URL.
+
+        Args:
+            stream: The identifier of the stream resource. Format: "stream" or "loop/streamId/groupId".
+                Examples: "stream1", "loop1/stream", "loop1/stream/group".
+            group: The group identifier for the stream resource.
+            operation: Can be 'ws', 'http', 'stream'.
+
+        Returns:
+            The URL for the resource
+
+        Raises:
+            ValueError: If the resource is not found or an invalid operation is provided
+
+        """
+        parts = stream.split("/")
+
+        if len(parts) == 1:
+            (stream,) = parts
+            if stream == None:
+                raise ValueError(
+                    f"Invalid stream {stream}: must reference either a loop or a stream"
+                )
+            if stream not in self._streams:
+                raise ValueError(f"Stream {stream} not found")
+            stream_connnection_info = self._streams[stream].connection_info
+        elif len(parts) == 2:
+            loop, stream = parts
+            if loop not in self._loops:
+                raise ValueError(f"Loop {loop} not found")
+            stream_connnection_info = self._loops[
+                loop
+            ].connect_info.stream_connection_info(stream)
+        elif len(parts) == 3:
+            loop, stream, group = parts
+            if loop not in self._loops:
+                raise ValueError(f"Loop {loop} not found")
+            stream_connnection_info = self._loops[
+                loop
+            ].connect_info.stream_connection_info(stream, group)
+        else:
+            raise ValueError(
+                f"Invalid stream {stream}: must follow the format 'stream', 'loop/streamId', or 'loop/streamId/groupId'"
+            )
+
+        if operation == "ws":
+            return stream_connnection_info.connect_info.url
+        elif operation == "http":
+            return stream_connnection_info.send_info.url
+        elif operation == "stream":
+            # TODO: clean this up
+            return stream_connnection_info.connect_info.url.replace(
+                "wss://", "stream://", 1
+            )
+        else:
+            raise ValueError(
+                f"Invalid operation {operation}: must be one of 'stream', 'ws', 'http'"
+            )
+
+    def get_uri(self, resource_uri):
+        operation, resource = resource_uri.split("://", 1)
+        if operation in ("stream", "ws", "http"):
+            return self._get_stream_uri(resource)
+        elif operation in (
+            "cluster",
+            "config",
+            "queue",
+            "claim",
+            "release-claim",
+            "updates",
+        ):
+            return self._get_cluster_uri(resource, operation)
+        else:
+            raise ValueError(
+                f"Invalid operation {operation}: must be one of 'stream', 'ws', 'http', 'cluster', 'config', 'queue', 'claim', 'release', 'updates'"
+            )
 
     def _object_download(self, pile, key=None, notification=None, attach_prefix=False):
         if key == None and notification == None:
@@ -192,7 +317,7 @@ class Itl:
     async def cluster_create(self, cluster, data):
         return await self._clusters[cluster].create_resource(data)
 
-    async def cluster_read_all(
+    async def cluster_get_all(
         self,
         from_cluster,
         cluster=None,
@@ -207,7 +332,9 @@ class Itl:
             group, version, kind, name, fiber, utctime, cluster=cluster
         )
 
-    async def cluster_read(self, from_cluster, group, version, kind, name, fiber=None, cluster=None):
+    async def cluster_get(
+        self, from_cluster, group, version, kind, name, fiber=None, cluster=None
+    ):
         return await self._clusters[from_cluster].read_resource(
             group, version, kind, name, fiber, cluster=cluster
         )
@@ -324,9 +451,11 @@ class Itl:
 
         task = self._attach_stream, (identifier,)
         self._start_persistent_tasks[identifier] = task
-        asyncio.create_task(self._attach_stream(identifier))
+        asyncio.create_task(
+            self._attach_stream(identifier), name=f"schedule_{identifier}"
+        )
 
-    def ondata(self, stream=None, loop=None, streamId=None, key=None):
+    def ondata(self, stream=None, loop=None, streamId=None, onconnect=None, key=None):
         if stream == None:
             loop_info = self._loops[loop]
             stream = f"stream/{loop}/{streamId}"
@@ -338,16 +467,20 @@ class Itl:
 
         self._ensure_stream_connection([stream])
 
-        def decorator(func):
-            self._data_handlers[stream][key].append(func)
-            return func
+        def decorator(onmessage):
+            self._data_handlers[stream][key].append((onmessage, onconnect))
+            return onmessage
 
         return decorator
-    
-    def stream_attach(self, fn, stream=None, loop=None, streamId=None, key=None):
-        self.ondata(stream, loop, streamId, key)(fn)
-    
-    async def _schedule_disconnect_task_unsafe(self, stream_ops: StreamOperations, send_queue: asyncio.Queue):
+
+    def stream_attach(
+        self, onmessage, stream=None, loop=None, streamId=None, onconnect=None, key=None
+    ):
+        self.ondata(stream, loop, streamId, onconnect, key)(onmessage)
+
+    async def _schedule_disconnect_task_unsafe(
+        self, stream_ops: StreamOperations, send_queue: asyncio.Queue
+    ):
         if stream_ops:
             await stream_ops.close()
         if send_queue:
@@ -367,31 +500,43 @@ class Itl:
                         stream_ops = self._streams[stream]
                     else:
                         stream_ops = None
-                    
+
                     send_queue = self._downstream_queues.get(stream)
 
                     # The stream isn't open, so we don't need to close it
                     if stream not in self._start_persistent_tasks:
                         continue
-                    
+
                     del self._start_persistent_tasks[stream]
 
-                    if ':' in stream:
+                    if ":" in stream:
                         del self._streams[stream]
 
                     # Check if the Itl is already running
                     if self._connection_looper:
                         self._connection_looper.call_soon_threadsafe(
                             self._connection_tasks.put_nowait,
-                            (self._schedule_disconnect_task_unsafe, (stream_ops, send_queue), {})
+                            (
+                                self._schedule_disconnect_task_unsafe,
+                                (stream_ops, send_queue),
+                                {},
+                            ),
                         )
-                    
 
-    def onupdate(self, cluster, group=None, version=None, kind=None, name=None, fiber=None):
+    def onupdate(
+        self,
+        cluster,
+        group=None,
+        version=None,
+        kind=None,
+        name=None,
+        fiber=None,
+        key=None,
+        onconnect=None,
+    ):
         stream = "cluster/" + cluster
 
         def decorator(func):
-            @self.ondata(stream)
             async def update_handler(*args, **event):
                 if event["event"] not in ("put", "delete"):
                     return
@@ -405,9 +550,13 @@ class Itl:
                     return
                 if fiber and event["fiber"] != fiber:
                     return
-            
+
                 await func(**event)
-        
+
+            self.stream_attach(
+                update_handler, stream=stream, key=key, onconnect=onconnect
+            )
+
         return decorator
 
     def controller(
@@ -419,6 +568,7 @@ class Itl:
         name=None,
         fiber="resource",
         validate=True,
+        key=None,
     ):
         cluster_obj = self._clusters[cluster]
         stream = "cluster/" + cluster
@@ -443,12 +593,14 @@ class Itl:
                             print(
                                 f"Error in controller {func.__name__}: {traceback.format_exc()}"
                             )
+                            print("(Still running)")
                 except Exception as e:
                     print(
                         f"Error in controller {func.__name__}: {traceback.format_exc()}"
                     )
+                    print("(Still running)")
 
-            @self.ondata(stream)
+            @self.ondata(stream, key=key)
             async def event_handler(*args, **event):
                 if event["event"] != "queue":
                     return
@@ -482,7 +634,6 @@ class Itl:
             return func
 
         return decorator
-    
 
     def onconnect(self, func):
         if self._callback_looper:
@@ -504,24 +655,29 @@ class Itl:
 
         return func
 
-
     async def _process_upstream_messages(self):
         def process_message(identifier, serialized_data):
-            message = json.loads(serialized_data)
-            # TODO: Run all handlers in parallel
-            for collection in self._data_handlers[identifier].values():
-                for handler in collection:
-                    if isinstance(message, dict):
-                        args = []
-                        kwargs = message
-                    else:
-                        args = [message]
-                        kwargs = {}
+            if serialized_data != None:
+                message = json.loads(serialized_data)
+                # TODO: Run all handlers in parallel
+                for collection in self._data_handlers[identifier].values():
+                    for handler, _ in collection:
+                        if isinstance(message, dict):
+                            args = []
+                            kwargs = message
+                        else:
+                            args = [message]
+                            kwargs = {}
 
-                    _exec_callback(handler, args, kwargs)
+                        _exec_callback(handler, args, kwargs)
+            else:
+                for collection in self._data_handlers[identifier].values():
+                    for _, handler in collection:
+                        if handler != None:
+                            _exec_callback(handler, [], {})
 
         for fn, args in self._start_ephemeral_tasks:
-            asyncio.create_task(fn(*args))
+            asyncio.create_task(fn(*args), name=fn.__name__)
 
         self._ready_looper.call_soon_threadsafe(self.ready_queue.put_nowait, None)
 
@@ -545,17 +701,12 @@ class Itl:
                 pass
             except Exception as e:
                 print(f"Error in message processing: {traceback.format_exc()}")
+                print("(Still running)")
 
         for fn in self._disconnect_tasks:
             fn()
 
         self._finished_looper.call_soon_threadsafe(self.finished_queue.put_nowait, None)
-
-    async def _post_stream_message(self, url, message):
-        # call HTTP POST on key, passing message as data
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=json.dumps(message)) as response:
-                response.raise_for_status()
 
     def stream_send(self, stream=None, message=None, loop=None, streamId=None):
         if stream == None:
@@ -573,6 +724,28 @@ class Itl:
             self._downstream_queues[stream].put_nowait, message
         )
 
+    def get_apikey(self, url):
+        target_domain = urlparse(url).netloc
+        for remote, value in self._keys.items():
+            allowed_domains = self._resolver.get_remote_config(remote)
+            for allowed_domain in allowed_domains.values():
+                domain = urlparse(allowed_domain).netloc
+                if domain == target_domain:
+                    return value
+
+    def stream_post(self, stream=None, message=None, group=None, url=None, client=None):
+        if stream:
+            url = self._get_stream_uri(stream, group, operation="http")
+
+        if url == None:
+            raise ValueError("No stream, loop/streamId, or url provided")
+
+        if url.startswith("stream://"):
+            url = url.replace("stream://", "https://", 1)
+
+        params = {"apikey": self.get_apikey(url)}
+
+        httpx.post(url, params=params, json=json.dumps(message)).read()
 
     def _requeue(self, identifier, message):
         if message == None:
@@ -596,11 +769,16 @@ class Itl:
         state.message = None
 
         if identifier not in self._streams:
-            protocol = identifier.split(':')[0]
-            if protocol in ('stream', 'http', 'https', 'ws', 'wss'):
-                self._streams[identifier] = StreamOperations.from_uri(identifier)
+            protocol = identifier.split(":")[0]
+            if protocol in ("stream", "http", "https", "ws", "wss"):
+                apikey = self.get_apikey(identifier)
+                self._streams[identifier] = StreamOperations.from_uri(
+                    identifier, apikey
+                )
             else:
-                raise NotImplementedError("Streams must be defined in the config or be a valid URI.")
+                raise NotImplementedError(
+                    "Streams must be defined in the config or be a valid URI."
+                )
 
         apikey = self._streams[identifier].apikey
 
@@ -650,6 +828,10 @@ class Itl:
         tasks = None
 
         while not self._stopped:
+            if self._streams[identifier].socket:
+                # Another loop is already running for this stream
+                return
+
             try:
                 if not tasks:
                     tasks = [
@@ -665,6 +847,11 @@ class Itl:
                     backoff_time = 0
                     self._streams[identifier].socket = websocket
 
+                    # Run `onconnect` tasks
+                    self._callback_looper.call_soon_threadsafe(
+                        self._callback_tasks.put_nowait, (identifier, None)
+                    )
+
                     while True:
                         done, pending = await asyncio.wait(
                             tasks, return_when=asyncio.FIRST_COMPLETED
@@ -677,13 +864,18 @@ class Itl:
                         for completed in done:
                             if completed.result() == False:
                                 connection_closed = True
-                                tasks = None
+                                break
                             elif completed == tasks[0]:
-                                tasks[0] = asyncio.create_task(send_message())
+                                tasks[0] = asyncio.create_task(
+                                    send_message(), name="send_message"
+                                )
                             elif completed == tasks[1]:
-                                tasks[1] = asyncio.create_task(recv_message())
+                                tasks[1] = asyncio.create_task(
+                                    recv_message(), name="recv_message"
+                                )
 
                         if connection_closed:
+                            tasks = None
                             break
 
             except websockets.exceptions.ConnectionClosedOK:
@@ -693,7 +885,7 @@ class Itl:
 
             if self._stopped:
                 return
-            
+
             if not identifier in self._started_streams:
                 return
 
@@ -706,45 +898,49 @@ class Itl:
         # Return the next backoff time, capped at 2**7 seconds
         return min(current_backoff_time + 1, 7)
 
-    def start(self, daemon=True):
+    def start(self, daemon=True, debug=False):
         if self._started:
             if self._stopped:
                 raise RuntimeError("Cannot start the same itl twice")
             return
         self._started = True
         self._ready_looper = asyncio.new_event_loop()
-        self._ready_looper.set_debug(True)
+        self._ready_looper.set_debug(debug)
         self._ready_looper.set_exception_handler(self.default_exception_handler)
 
         self._finished_looper = asyncio.new_event_loop()
-        self._finished_looper.set_debug(True)
+        self._finished_looper.set_debug(debug)
         self._finished_looper.set_exception_handler(self.default_exception_handler)
 
         self._connection_thread = threading.Thread(
-            target=self._handle_connections_in_thread, daemon=daemon
+            target=self._handle_connections_in_thread,
+            daemon=daemon,
+            args=[debug],
         )
         self._connection_thread.start()
 
         self._callback_thread = threading.Thread(
-            target=self._handle_callbacks_in_thread, daemon=daemon
+            target=self._handle_callbacks_in_thread,
+            daemon=daemon,
+            args=[debug],
         )
         self._callback_thread.start()
 
         self._ready_looper.run_until_complete(self.ready_queue.get())
         self._ready_looper.run_until_complete(self.ready_queue.get())
 
-    def _handle_connections_in_thread(self):
+    def _handle_connections_in_thread(self, debug=False):
         self._connection_looper = looper = asyncio.new_event_loop()
         asyncio.set_event_loop(looper)
-        looper.set_debug(True)
+        looper.set_debug(debug)
         looper.set_exception_handler(self.default_exception_handler)
         looper.run_until_complete(self._start_routine())
 
-    def _handle_callbacks_in_thread(self):
+    def _handle_callbacks_in_thread(self, debug=False):
         self._callback_looper = looper = asyncio.new_event_loop()
         self._callback_context = Context()
         asyncio.set_event_loop(looper)
-        looper.set_debug(True)
+        looper.set_debug(debug)
         looper.set_exception_handler(self.default_exception_handler)
         looper.run_until_complete(self._process_upstream_messages())
 
@@ -788,7 +984,7 @@ class Itl:
         self._looper = asyncio.get_event_loop()
 
         for fn, args in self._start_persistent_tasks.values():
-            asyncio.create_task(fn(*args))
+            asyncio.create_task(fn(*args), name=fn.__name__)
 
         self._ready_looper.call_soon_threadsafe(self.ready_queue.put_nowait, None)
 
