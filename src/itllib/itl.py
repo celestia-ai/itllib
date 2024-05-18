@@ -362,8 +362,8 @@ class Itl:
     async def cluster_apply(self, cluster, data):
         return await self._clusters[cluster].apply_resource(data)
 
-    async def cluster_post(self, from_cluster, data):
-        return await self._clusters[from_cluster].post_resource(data)
+    async def cluster_post(self, from_cluster, data, cluster=None):
+        return await self._clusters[from_cluster].post_resource(data, cluster=cluster)
 
     async def cluster_delete(
         self, from_cluster, group, version, kind, name, fiber=None, cluster=None

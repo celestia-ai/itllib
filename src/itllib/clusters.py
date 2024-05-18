@@ -8,12 +8,22 @@ import json
 from urllib.parse import urlparse
 from .loops import ConnectionInfo, StreamOperations
 
+@dataclass(frozen=True)
+class FiberConnectionInfo:
+    connection_info_fn: Callable[[str], ConnectionInfo]
+    stream_info: ConnectionInfo
 
 @dataclass(frozen=True)
 class ClusterConnectionInfo:
     cluster_id: str
     connection_info_fn: Callable[[str], ConnectionInfo]
     stream_info: ConnectionInfo
+
+    def fiber_connection_info(self, fiber_id, group):
+        return FiberConnectionInfo(
+            connection_info_fn=self.connection_info_fn,
+            stream_info=self.stream_info,
+        )
 
 
 def create_patch(old_spec, new_spec):
@@ -187,11 +197,10 @@ class ClusterOperations:
                 # return await response.json()
                 return json.loads(text)
 
-    async def post_resource(self, config):
+    async def post_resource(self, config, cluster=None):
         name = config["metadata"]["name"]
         group, version = config["apiVersion"].split("/")
         kind = config["kind"]
-        cluster = config["metadata"].get("remote", self.cluster_id)
         endpoint = self.connection_info.connection_info_fn(cluster)
         url = f"{endpoint.url}/config/{group}/{version}/{kind}/{name}"
         params = endpoint.params.copy()
@@ -541,6 +550,7 @@ class PendingOperation:
         self.name = self.controller.name
         self.fiber = self.controller.fiber
         self.remote = self.controller.config_ops.cluster_id
+        self.api_version = f"{self.group}/{self.version}"
 
     def identifier(self):
         cluster = self.cluster

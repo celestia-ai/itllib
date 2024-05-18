@@ -12,7 +12,7 @@ import re
 import fire
 import yaml
 import httpx
-from itllib.clusters import ClusterConnectionInfo
+from itllib.clusters import ClusterConnectionInfo, FiberConnectionInfo
 
 from itllib.loops import LoopConnectionInfo, ConnectionInfo, StreamConnectionInfo
 
@@ -86,6 +86,7 @@ CONFIG_KINDS = {
     "Loop",
     "Stream",
     "Cluster",
+    "Fiber",
 }
 
 
@@ -143,6 +144,9 @@ def expand_keys(config):
         elif config_type == "clusters":
             for cluster in config_value:
                 yield ResourceReference("Cluster", cluster["name"])
+        elif config_type == "fibers":
+            for fiber in config_value:
+                yield ResourceReference("Fiber", fiber["name"])
         else:
             raise ValueError(f"Unknown config type {config_type}")
 
@@ -515,6 +519,9 @@ class StreamResource(Resource):
             {"loopId", "streamId", "remote"},
             {
                 "dacTags",
+                "dacDefaultRead",
+                "dacDefaultWrite",
+                "dacDefaultExecute",
                 "dacWhitelistRead",
                 "dacWhitelistWrite",
                 "dacWhitelistExecute",
@@ -617,6 +624,62 @@ class ClusterResource(Resource):
             connection_info_fn=connection_info_fn,
         )
 
+class FiberResource(Resource):
+    def __init__(self, config):
+        self.kind = "Fiber"
+
+        if not validate_keys(
+            "fiber",
+            config.get("spec", {}),
+            {"clusterId", "fiberId", "remote"},
+            {
+                "dacTags",
+                "dacDefaultRead",
+                "dacDefaultWrite",
+                "dacDefaultExecute",
+                "dacWhitelistRead",
+                "dacWhitelistWrite",
+                "dacWhitelistExecute",
+                "dacBlacklistRead",
+                "dacBlacklistWrite",
+                "dacBlacklistExecute",
+            },
+        ):
+            raise ValueError()
+        self.config = config
+        self.name = config["metadata"]["name"]
+        self.parent_ref_or_id = ResourceIdRef("Cluster", config["spec"]["clusterId"])
+        self.remote = config["spec"]["remote"]
+
+    def resource_ids(self):
+        return
+        yield
+
+    def cluster(self, resolver: "ResourceResolver") -> ClusterResource:
+        return self.parent(resolver)
+
+    def connection_info(self, resolver: "ResourceResolver") -> FiberConnectionInfo:
+        fiber_id = resolver.link(self.config["spec"]["fiberId"])
+
+        if "clusterId" in self.config["spec"]:
+            cluster_id = self.config["spec"]["clusterId"]
+
+            config_base = resolver.get_remote_config(self.remote)["clusters"]
+            stream_base = resolver.get_remote_config(self.remote)["loops"]
+            # rest_base, ws_base = _split_base_uri(base)
+            # path = "/loop/" + cluster_id
+
+            cluster_info = ClusterConnectionInfo(
+                cluster_id,
+                ConnectionInfo(config_base, "/cluster/" + cluster_id),
+                ConnectionInfo(stream_base, "/cluster/" + cluster_id),                
+            )
+        else:
+            cluster_info = self.cluster(resolver).connection_info(resolver)
+
+        group = None
+        return cluster_info.fiber_connection_info(fiber_id, group)
+
 
 class Spec:
     def compile(self):
@@ -636,7 +699,7 @@ class ResourceSpec(Spec):
             "spec",
             items,
             set(),
-            {"groups", "clients", "loops", "streams", "clusters"},
+            {"groups", "clients", "loops", "streams", "clusters", "fibers"},
         ):
             error = True
 
@@ -671,6 +734,13 @@ class ResourceSpec(Spec):
         for cluster in items.get("clusters", []):
             try:
                 yield ResourceSpec.compile_cluster(cluster)
+            except ValueError as e:
+                error = True
+                continue
+        
+        for fiber in items.get("fibers", []):
+            try:
+                yield ResourceSpec.compile_fiber(fiber)
             except ValueError as e:
                 error = True
                 continue
@@ -890,9 +960,13 @@ class ResourceSpec(Spec):
         if not validate_keys(
             "stream",
             config,
-            {"name", "loop"},
+            {"name", "loop", "streamId"},
             {
                 "dacTags",
+                "streamId",
+                "dacDefaultRead",
+                "dacDefaultWrite",
+                "dacDefaultExecute",
                 "dacWhitelistRead",
                 "dacWhitelistWrite",
                 "dacWhitelistExecute",
@@ -914,8 +988,17 @@ class ResourceSpec(Spec):
                     resourceKey=ResourceReference("Stream", config["name"])
                 ),
                 "loopId": LoopId(config["loop"]),
-                "streamId": config["name"],
+                "streamId": config.get("streamId") or config["name"],
                 "dacTags": config.get("dacTags", []),
+                "dacDefaultRead": [
+                    GroupId(x) for x in config.get("dacDefaultRead", [])
+                ],
+                "dacDefaultWrite": [
+                    GroupId(x) for x in config.get("dacDefaultWrite", [])
+                ],
+                "dacDefaultExecute": [
+                    GroupId(x) for x in config.get("dacDefaultExecute", [])
+                ],
                 "dacWhitelistRead": [
                     GroupId(x) for x in config.get("dacWhitelistRead", [])
                 ],
@@ -1004,6 +1087,73 @@ class ResourceSpec(Spec):
         }
 
         return ClusterResource(cluster_config)
+
+    @classmethod
+    def compile_fiber(cls, config: dict):
+        if not validate_keys(
+            "fiber",
+            config,
+            {"name", "cluster"},
+            {
+                "dacTags",
+                "fiberId",
+                "dacDefaultRead",
+                "dacDefaultWrite",
+                "dacDefaultExecute",
+                "dacWhitelistRead",
+                "dacWhitelistWrite",
+                "dacWhitelistExecute",
+                "dacBlacklistRead",
+                "dacBlacklistWrite",
+                "dacBlacklistExecute",
+            },
+        ):
+            raise ValueError()
+
+        fiber_config = {
+            "apiVersion": "thatone.ai/v1",
+            "kind": "Fiber",
+            "metadata": {
+                "name": config["name"],
+            },
+            "spec": {
+                "remote": Remote(
+                    resourceKey=ResourceReference("Fiber", config["name"])
+                ),
+                "clusterId": ClusterId(config["cluster"]),
+                "fiberId": config.get("fiberId") or config["name"],
+                "dacTags": config.get("dacTags", []),
+                "dacDefaultRead": [
+                    GroupId(x) for x in config.get("dacDefaultRead", [])
+                ],
+                "dacDefaultWrite": [
+                    GroupId(x) for x in config.get("dacDefaultWrite", [])
+                ],
+                "dacDefaultExecute": [
+                    GroupId(x) for x in config.get("dacDefaultExecute", [])
+                ],
+                "dacWhitelistRead": [
+                    GroupId(x) for x in config.get("dacWhitelistRead", [])
+                ],
+                "dacWhitelistWrite": [
+                    GroupId(x) for x in config.get("dacWhitelistWrite", [])
+                ],
+                "dacWhitelistExecute": [
+                    GroupId(x) for x in config.get("dacWhitelistExecute", [])
+                ],
+                "dacBlacklistRead": [
+                    GroupId(x) for x in config.get("dacBlacklistRead", [])
+                ],
+                "dacBlacklistWrite": [
+                    GroupId(x) for x in config.get("dacBlacklistWrite", [])
+                ],
+                "dacBlacklistExecute": [
+                    GroupId(x) for x in config.get("dacBlacklistExecute", [])
+                ],
+            },
+        }
+
+        return FiberResource(fiber_config)
 
 
 class ResourcePile:
@@ -1263,6 +1413,8 @@ class ResourcePile:
             return [StreamResource(located_config.config)]
         elif kind == "Cluster":
             return [ClusterResource(located_config.config)]
+        elif kind == "Fiber":
+            return [FiberResource(located_config.config)]
         elif kind == "Remote":
             return []
         else:
