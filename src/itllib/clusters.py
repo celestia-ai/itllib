@@ -353,6 +353,7 @@ class BaseController:
         self.current_config = None
         self.delete_current = False
         self.locked_config_name = None
+        self.config_changed = False
 
     async def __aenter__(self):
         await self.acquire_object()
@@ -394,7 +395,7 @@ class BaseController:
             self.kind,
             self.locked_config_name,
             self.fiber,
-            self.current_config,
+            self.current_config if self.config_changed else None,
             list(self.processed_op_ids),
             delete=self.delete_current,
             force=True,
@@ -405,6 +406,7 @@ class BaseController:
         self.delete_current = False
         self.have_current_config = False
         self.processed_op_ids = set()
+        self.config_changed = False
 
     async def next_operation_batch(self):
         if self.locked_config_name == None:
@@ -423,7 +425,7 @@ class BaseController:
             self.kind,
             self.locked_config_name,
             self.fiber,
-            self.current_config,
+            self.current_config if self.config_changed else None,
             list(self.processed_op_ids),
             delete=self.delete_current,
             force=force,
@@ -431,6 +433,7 @@ class BaseController:
 
         self.observed_op_ids = set()
         self.processed_op_ids = set()
+        self.config_changed = False
 
         # If there are new operations for this object, queue them
         if new_ops:
@@ -526,6 +529,7 @@ class BaseController:
 
         if new_config != None or pendingOp.data["operation"] != "POST":
             self.current_config = new_config or await pendingOp.new_config()
+            self.config_changed = True
 
         if delete == None:
             self.delete_current = pendingOp.data["operation"] == "DELETE"
