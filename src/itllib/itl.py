@@ -569,6 +569,7 @@ class Itl:
         fiber="resource",
         validate=True,
         key=None,
+        onconnect=None,
     ):
         cluster_obj = self._clusters[cluster]
         stream = "cluster/" + cluster
@@ -600,7 +601,7 @@ class Itl:
                     )
                     print("(Still running)")
 
-            @self.ondata(stream, key=key)
+            @self.ondata(stream, key=key, onconnect=onconnect)
             async def event_handler(*args, **event):
                 if event["event"] != "queue":
                     return
