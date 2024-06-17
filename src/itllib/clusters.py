@@ -8,10 +8,12 @@ import json
 from urllib.parse import urlparse
 from .loops import ConnectionInfo, StreamOperations
 
+
 @dataclass(frozen=True)
 class FiberConnectionInfo:
     connection_info_fn: Callable[[str], ConnectionInfo]
     stream_info: ConnectionInfo
+
 
 @dataclass(frozen=True)
 class ClusterConnectionInfo:

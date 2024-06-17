@@ -624,6 +624,7 @@ class ClusterResource(Resource):
             connection_info_fn=connection_info_fn,
         )
 
+
 class FiberResource(Resource):
     def __init__(self, config):
         self.kind = "Fiber"
@@ -672,7 +673,7 @@ class FiberResource(Resource):
             cluster_info = ClusterConnectionInfo(
                 cluster_id,
                 ConnectionInfo(config_base, "/cluster/" + cluster_id),
-                ConnectionInfo(stream_base, "/cluster/" + cluster_id),                
+                ConnectionInfo(stream_base, "/cluster/" + cluster_id),
             )
         else:
             cluster_info = self.cluster(resolver).connection_info(resolver)
@@ -737,7 +738,7 @@ class ResourceSpec(Spec):
             except ValueError as e:
                 error = True
                 continue
-        
+
         for fiber in items.get("fibers", []):
             try:
                 yield ResourceSpec.compile_fiber(fiber)

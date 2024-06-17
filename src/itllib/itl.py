@@ -469,6 +469,8 @@ class Itl:
 
         def decorator(onmessage):
             self._data_handlers[stream][key].append((onmessage, onconnect))
+            if onconnect and stream in self._started_streams:
+                _exec_callback(onconnect, [], {})
             return onmessage
 
         return decorator
@@ -559,6 +561,9 @@ class Itl:
 
         return decorator
 
+    def controller_detatch(self, key):
+        return self.stream_detach(key)
+
     def controller(
         self,
         cluster,
@@ -575,6 +580,22 @@ class Itl:
         stream = "cluster/" + cluster
 
         def decorator(func):
+            async def check_queue():
+                for queued_op in await self.cluster_read_queue(
+                    cluster,
+                    group=group,
+                    version=version,
+                    kind=kind,
+                    name=name,
+                    fiber=fiber,
+                ):
+                    asyncio.create_task(controller_wrapper(**queued_op))
+
+            async def _onconnect():
+                await check_queue()
+                if onconnect:
+                    _exec_callback(onconnect, [], {})
+
             async def controller_wrapper(*args, **event):
                 operations = self.cluster_controller(
                     cluster,
@@ -592,16 +613,14 @@ class Itl:
                             await func(operations)
                         except Exception as e:
                             print(
-                                f"Error in controller {func.__name__}: {traceback.format_exc()}"
+                                f"Error in controller {func}: {traceback.format_exc()}"
                             )
                             print("(Still running)")
                 except Exception as e:
-                    print(
-                        f"Error in controller {func.__name__}: {traceback.format_exc()}"
-                    )
+                    print(f"Error in controller {func}: {traceback.format_exc()}")
                     print("(Still running)")
 
-            @self.ondata(stream, key=key, onconnect=onconnect)
+            @self.ondata(stream, key=key, onconnect=_onconnect)
             async def event_handler(*args, **event):
                 if event["event"] != "queue":
                     return
@@ -620,18 +639,7 @@ class Itl:
 
             self._controllers.setdefault(cluster, []).append(func)
 
-            async def check_queue():
-                for queued_op in await self.cluster_read_queue(
-                    cluster,
-                    group=group,
-                    version=version,
-                    kind=kind,
-                    name=name,
-                    fiber=fiber,
-                ):
-                    asyncio.create_task(controller_wrapper(**queued_op))
-
-            self.onconnect(check_queue)
+            # self.onconnect(check_queue)
             return func
 
         return decorator
