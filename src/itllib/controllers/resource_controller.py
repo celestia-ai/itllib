@@ -200,7 +200,7 @@ class ResourceController:
             new_child_controller = None
 
             if not isinstance(controller, (ResourceController, ResourceMonitor)):
-                if hasattr(controller, '__call__'):
+                if hasattr(controller, "__call__"):
                     try:
                         controller = controller(
                             itl=self.itl,
@@ -381,7 +381,7 @@ class CascadeChildController(ResourceController):
             self.events.creation_error = e
             self.events.creation.set()
             raise e
-        
+
     async def delete_resource(self, op: PendingOperation):
         try:
             result = await self.controller.delete_resource(op)
@@ -418,7 +418,7 @@ class CascadeChildMonitor(ResourceMonitor):
 
     async def onput(self, config):
         try:
-            result = await self.controller.onput(config)    
+            result = await self.controller.onput(config)
             self.events.creation.set()
             return result
         except Exception as e:

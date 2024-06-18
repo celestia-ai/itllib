@@ -8,6 +8,7 @@ from itllib.itl import Itl
 from .resource_controller import ResourceController, ResourceKey
 from ..clusters import BaseController, PendingOperation
 
+
 class RelayChildController(ResourceController):
     def __init__(self, callback, parent_config, child_ref, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -116,7 +117,7 @@ class RelayOperator(ResourceController):
                         print("Error starting proxies for:", new_config)
                         traceback.print_exc()
                         await op.reject()
-                        print('(Still running)')
+                        print("(Still running)")
                         continue
 
                 elif new_config == None:
@@ -126,7 +127,7 @@ class RelayOperator(ResourceController):
                         print("Error stopping proxies for:", old_config)
                         traceback.print_exc()
                         await op.reject()
-                        print('(Still running)')
+                        print("(Still running)")
                         continue
 
                 await op.accept()
@@ -164,10 +165,12 @@ class RelayOperator(ResourceController):
                 RelayChildController,
                 callback=self.relay_message,
                 parent_config=parent_config,
-                child_ref=key
+                child_ref=key,
             )
             create_child_tasks.append(
-                self.create_child(parent_config, child_config, key, create_relay_child_controller)
+                self.create_child(
+                    parent_config, child_config, key, create_relay_child_controller
+                )
             )
 
         await asyncio.gather(*create_child_tasks)
