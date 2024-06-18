@@ -12,6 +12,8 @@ from .resource_monitor import ResourceMonitor
 class ResourceEvents:
     creation: asyncio.Event
     deletion: asyncio.Event
+    creation_error = None
+    deletion_error = None
 
     def __init__(self):
         self.creation = asyncio.Event()
@@ -190,30 +192,29 @@ class ResourceController:
                 await previous_child_events.deletion.wait()
                 previous_controller.stop()
             del self._children[child_ref][study_key]
+            if previous_child_events.deletion_error:
+                raise previous_child_events.deletion_error
 
         if child_key != previous_child_key:
             new_child_events = ResourceEvents()
             new_child_controller = None
 
-            if isinstance(controller, type):
-                if not issubclass(controller, (ResourceController, ResourceMonitor)):
-                    raise ValueError(
-                        "controller must be a ResourceController or ResourceMonitor"
-                    )
-                try:
-                    controller = controller(
-                        itl=self.itl,
-                        cluster=self.cluster,
-                        group=child_group,
-                        version=child_version,
-                        kind=child_key.kind,
-                        fiber=child_key.fiber,
-                        name=child_key.name,
-                    )
-                except:
-                    raise ValueError(
-                        "controller class must support the same init as ResourceController and ResourceMonitor"
-                    )
+            if not isinstance(controller, (ResourceController, ResourceMonitor)):
+                if hasattr(controller, '__call__'):
+                    try:
+                        controller = controller(
+                            itl=self.itl,
+                            cluster=self.cluster,
+                            group=child_group,
+                            version=child_version,
+                            kind=child_key.kind,
+                            fiber=child_key.fiber,
+                            name=child_key.name,
+                        )
+                    except:
+                        raise ValueError(
+                            "controller function must support the same args as ResourceController and ResourceMonitor"
+                        )
 
             if isinstance(controller, ResourceController):
                 new_child_controller = CascadeChildController(
@@ -256,7 +257,7 @@ class ResourceController:
                 new_child_events.creation.set()
             else:
                 raise ValueError(
-                    "childController must be a ResourceController, ResourceMonitor, or None"
+                    "controller must be a ResourceController, ResourceMonitor, or None"
                 )
 
             self._children[child_ref][study_key] = (
@@ -278,6 +279,8 @@ class ResourceController:
             )
 
             await new_child_events.creation.wait()
+            if new_child_events.creation_error:
+                raise new_child_events.creation_error
 
     async def create_children(
         self, parent_config, child_configs: dict, sync=False, controller=ResourceMonitor
@@ -326,8 +329,10 @@ class ResourceController:
             )
             if previous_child_controller:
                 await previous_child_events.deletion.wait()
-                self.itl.controller_detatch(previous_child_key)
+                previous_child_controller.stop()
             del self._children[child_ref][study_key]
+            if previous_child_events.deletion_error:
+                raise previous_child_events.deletion_error
 
     async def delete_children(self, parent_config, *child_refs, sync=True):
         if sync:
@@ -358,22 +363,40 @@ class CascadeChildController(ResourceController):
         self.events: ResourceEvents = events
 
     async def create_resource(self, op: PendingOperation):
-        result = await self.controller.create_resource(op)
-        self.events.creation.set()
-        return result
+        try:
+            result = await self.controller.create_resource(op)
+            self.events.creation.set()
+            return result
+        except Exception as e:
+            self.events.creation_error = e
+            self.events.creation.set()
+            raise e
 
     async def update_resource(self, op: PendingOperation):
-        result = await self.controller.update_resource(op)
-        self.events.creation.set()
-        return result
-
+        try:
+            result = await self.controller.update_resource(op)
+            self.events.creation.set()
+            return result
+        except Exception as e:
+            self.events.creation_error = e
+            self.events.creation.set()
+            raise e
+        
     async def delete_resource(self, op: PendingOperation):
-        result = await self.controller.delete_resource(op)
-        self.events.deletion.set()
-        return result
+        try:
+            result = await self.controller.delete_resource(op)
+            self.events.deletion.set()
+            return result
+        except Exception as e:
+            self.events.deletion_error = e
+            self.events.deletion.set()
+            raise e
 
     async def post_resource(self, op: PendingOperation):
-        return await self.controller.post_resource(op)
+        try:
+            return await self.controller.post_resource(op)
+        except Exception as e:
+            raise e
 
 
 class CascadeChildMonitor(ResourceMonitor):
@@ -394,11 +417,21 @@ class CascadeChildMonitor(ResourceMonitor):
         self.events: ResourceEvents = events
 
     async def onput(self, config):
-        result = await self.controller.onput(config)
-        self.events.creation.set()
-        return result
+        try:
+            result = await self.controller.onput(config)    
+            self.events.creation.set()
+            return result
+        except Exception as e:
+            self.events.creation_error = e
+            self.events.creation.set()
+            raise e
 
     async def ondelete(self, resource):
-        result = await self.controller.ondelete(resource)
-        self.events.deletion.set()
-        return result
+        try:
+            result = await self.controller.ondelete(resource)
+            self.events.deletion.set()
+            return result
+        except Exception as e:
+            self.events.deletion_error = e
+            self.events.deletion.set()
+            raise e
