@@ -561,7 +561,7 @@ class Itl:
 
         return decorator
 
-    def controller_detatch(self, key):
+    def controller_detach(self, key):
         return self.stream_detach(key)
 
     def controller(

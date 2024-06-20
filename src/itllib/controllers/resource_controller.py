@@ -91,7 +91,7 @@ class ResourceController:
         )(self._controller)
 
     def stop(self):
-        self.itl.controller_detatch(self.key)
+        self.itl.controller_detach(self.key)
         self._started = False
 
     async def _controller(self, pending: BaseController):
