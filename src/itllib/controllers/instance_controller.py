@@ -1,5 +1,7 @@
 import asyncio
 
+from itllib.clusters import PendingOperation
+
 from .resource_controller import ResourceController
 
 
@@ -30,28 +32,31 @@ class InstanceController(ResourceController):
     def start(self, key=None):
         _start_fn = super().start
 
+        async def _load_existing():
+            resources = await self.itl.cluster_get_all(
+                self.cluster,
+                group=self.group,
+                version=self.version,
+                kind=self.kind,
+                fiber=self.fiber,
+            )
+            if not resources:
+                return
+
+            for data in resources:
+                config = data["config"]
+                await self.load_resource(config)
+
         async def _start():
             await self.unlock_resources()
-            await self._load_existing()
+            await _load_existing()
             # self.start_controller()
             _start_fn(key)
 
         self.itl.onconnect(_start)
 
-    async def _load_existing(self):
-        resources = await self.itl.cluster_get_all(
-            self.cluster,
-            group=self.group,
-            version=self.version,
-            kind=self.kind,
-            fiber=self.fiber,
-        )
-        if not resources:
-            return
-
-        for data in resources:
-            config = data["config"]
-            await self.load_resource(config)
-
     async def load_resource(self, config):
         pass
+
+    async def create_resource(self, op: PendingOperation):
+        return await self.load_resource(await op.new_config)

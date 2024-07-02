@@ -10,6 +10,25 @@ from .loops import ConnectionInfo, StreamOperations
 
 
 @dataclass(frozen=True)
+class ResourceKey:
+    cluster: str
+    apiVersion: str
+    kind: str
+    name: str
+    fiber: str
+
+    @classmethod
+    def from_config(cls, cluster, config):
+        return cls(
+            cluster=config["metadata"].get("remote", cluster),
+            apiVersion=config["apiVersion"],
+            kind=config["kind"],
+            name=config["metadata"]["name"],
+            fiber=config["metadata"].get("fiber", "resource"),
+        )
+
+
+@dataclass(frozen=True)
 class FiberConnectionInfo:
     connection_info_fn: Callable[[str], ConnectionInfo]
     stream_info: ConnectionInfo
@@ -357,6 +376,14 @@ class BaseController:
         self.locked_config_name = None
         self.config_changed = False
 
+        self.resource_key = ResourceKey(
+            cluster=cluster,
+            apiVersion=f"{group}/{version}",
+            kind=kind,
+            name=name,
+            fiber=fiber,
+        )
+
     async def __aenter__(self):
         await self.acquire_object()
 
@@ -557,6 +584,7 @@ class PendingOperation:
         self.fiber = self.controller.fiber
         self.remote = self.controller.config_ops.cluster_id
         self.api_version = f"{self.group}/{self.version}"
+        self.resource_key = controller.resource_key
 
     def identifier(self):
         cluster = self.cluster

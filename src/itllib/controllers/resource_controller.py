@@ -5,7 +5,7 @@ from typing import Any, Dict, Tuple
 import traceback
 
 from ..itl import Itl
-from ..clusters import BaseController, PendingOperation
+from ..clusters import BaseController, PendingOperation, ResourceKey
 from .resource_monitor import ResourceMonitor
 
 
@@ -35,15 +35,6 @@ async def _create_resource_if_not_exists(
         await itl.cluster_create(cluster, config)
     elif events:
         events.creation.set()
-
-
-@dataclass(frozen=True)
-class ResourceKey:
-    cluster: str
-    apiVersion: str
-    kind: str
-    name: str
-    fiber: str
 
 
 RelayDict = Dict[ResourceKey, Tuple[ResourceKey, ResourceEvents, Any]]
@@ -80,6 +71,54 @@ class ResourceController:
         self.key = key
         self._started = True
 
+        async def _controller(pending: BaseController):
+            async for op in pending:
+                message = await op.message()
+                if message != None:
+                    try:
+                        await self.post_resource(op)
+                        await op.accept()
+                    except Exception as e:
+                        await op.reject()
+                        print(
+                            f"Failed to post resource {self.kind}/{message['metadata']['name']}: {e}"
+                        )
+                        traceback.print_exc()
+                        print("(Still running)")
+                    continue
+
+                new_config = await op.new_config()
+                if new_config == None:
+                    # Delete the resource
+                    try:
+                        await self.delete_resource(op)
+                        await op.accept(delete=True)
+                    except Exception as e:
+                        await op.reject()
+                        print(
+                            f"Failed to delete resource {self.kind}/{pending.name}: {e}"
+                        )
+                        traceback.print_exc()
+                        print("(Still running)")
+                    continue
+
+                old_config = await op.old_config()
+
+                try:
+                    if old_config == None:
+                        new_config = await self.create_resource(op)
+                    else:
+                        new_config = await self.update_resource(op)
+
+                    await op.accept(new_config)
+
+                except Exception as e:
+                    await op.reject()
+                    print(f"Failed to load resource {self.kind}/{pending.name}: {e}")
+                    traceback.print_exc()
+                    print("(Still running)")
+                continue
+
         self.itl.controller(
             self.cluster,
             self.group,
@@ -88,57 +127,11 @@ class ResourceController:
             fiber=self.fiber,
             key=key,
             name=self.name,
-        )(self._controller)
+        )(_controller)
 
     def stop(self):
         self.itl.controller_detach(self.key)
         self._started = False
-
-    async def _controller(self, pending: BaseController):
-        async for op in pending:
-            message = await op.message()
-            if message != None:
-                try:
-                    await self.post_resource(op)
-                    await op.accept()
-                except Exception as e:
-                    await op.reject()
-                    print(
-                        f"Failed to post resource {self.kind}/{message['metadata']['name']}: {e}"
-                    )
-                    traceback.print_exc()
-                    print("(Still running)")
-                continue
-
-            new_config = await op.new_config()
-            if new_config == None:
-                # Delete the resource
-                try:
-                    await self.delete_resource(op)
-                    await op.accept(delete=True)
-                except Exception as e:
-                    await op.reject()
-                    print(f"Failed to delete resource {self.kind}/{pending.name}: {e}")
-                    traceback.print_exc()
-                    print("(Still running)")
-                continue
-
-            old_config = await op.old_config()
-
-            try:
-                if old_config == None:
-                    new_config = await self.create_resource(op)
-                else:
-                    new_config = await self.update_resource(op)
-
-                await op.accept(new_config)
-
-            except Exception as e:
-                await op.reject()
-                print(f"Failed to load resource {self.kind}/{pending.name}: {e}")
-                traceback.print_exc()
-                print("(Still running)")
-            continue
 
     async def create_resource(self, op: PendingOperation):
         pass
@@ -155,22 +148,15 @@ class ResourceController:
     async def create_child(
         self, parent_config, child_config, child_ref, controller=ResourceMonitor
     ):
-        study_key = ResourceKey(
-            self.cluster,
-            parent_config["apiVersion"],
-            parent_config["kind"],
-            parent_config["metadata"]["name"],
-            parent_config["metadata"].get("fiber", "resource"),
-        )
+        study_key = ResourceKey.from_config(self.cluster, parent_config)
+
         previous_child_key, previous_child_events, previous_controller = self._children[
             child_ref
         ][study_key]
-        child_key = ResourceKey(
+
+        child_key = ResourceKey.from_config(
             self.cluster,
-            child_config["apiVersion"],
-            child_config["kind"],
-            child_config["metadata"]["name"],
-            child_config["metadata"].get("fiber", "resource"),
+            child_config,
         )
         child_group, child_version = child_key.apiVersion.split("/")
 
@@ -303,13 +289,8 @@ class ResourceController:
                 )
 
     async def delete_child(self, parent_config, child_ref):
-        study_key = ResourceKey(
-            self.cluster,
-            parent_config["apiVersion"],
-            parent_config["kind"],
-            parent_config["metadata"]["name"],
-            parent_config["metadata"].get("fiber", "resource"),
-        )
+        study_key = ResourceKey.from_config(self.cluster, parent_config)
+
         (
             previous_child_key,
             previous_child_events,

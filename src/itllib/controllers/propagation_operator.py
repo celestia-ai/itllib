@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Any, List, Union, Optional
+from typing import Any, List, Type, Union, Optional
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 import httpx
@@ -190,7 +190,7 @@ class PropagationController(ResourceController):
         version,
         kind,
         fiber,
-        config_cls: PropagableConfig,
+        config_cls: Type[PropagableConfig],
         update_fn,
         cleanup_fn,
     ):
@@ -442,7 +442,7 @@ class PropagationMonitor(ResourceMonitor):
 
 
 class PropagationOperator:
-    CONFIG_CLS: PropagableConfig
+    CONFIG_CLS: Type[PropagableConfig]
 
     def __init_subclass__(cls) -> None:
         if cls.CONFIG_CLS is None:

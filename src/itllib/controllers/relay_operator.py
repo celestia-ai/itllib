@@ -21,7 +21,7 @@ class RelayChildController(InstanceController):
         return await self.callback(self.parent_config, self.child_ref, op)
 
 
-class RelayOperator(InstanceController):
+class RelayInstanceOperator(InstanceController):
     async def unlock_resources(self):
         unlock_tasks = [super().unlock_resources()]
 

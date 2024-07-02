@@ -8,4 +8,7 @@ from .propagation_operator import (
     ConfigUri,
     StreamUri,
 )
-from .relay_operator import RelayOperator
+from .relay_operator import RelayInstanceOperator
+
+from .models import Metadata, ResourceConfig
+from .mixins import OptimizerMixin, ExperimenterMixin
