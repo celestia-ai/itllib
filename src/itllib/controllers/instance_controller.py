@@ -59,4 +59,4 @@ class InstanceController(ResourceController):
         pass
 
     async def create_resource(self, op: PendingOperation):
-        return await self.load_resource(await op.new_config)
+        return await self.load_resource(await op.new_config())

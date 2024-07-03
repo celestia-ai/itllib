@@ -543,7 +543,9 @@ class StreamResource(Resource):
     def loop(self, resolver: "ResourceResolver") -> LoopResource:
         return self.parent(resolver)
 
-    def connection_info(self, resolver: "ResourceResolver") -> StreamConnectionInfo:
+    def connection_info(
+        self, resolver: "ResourceResolver", group=None
+    ) -> StreamConnectionInfo:
         stream_id = resolver.link(self.config["spec"]["streamId"])
 
         if "loopId" in self.config["spec"]:
@@ -560,7 +562,6 @@ class StreamResource(Resource):
         else:
             loop_info = self.loop(resolver).connection_info(resolver)
 
-        group = None
         return loop_info.stream_connection_info(stream_id, group)
 
 

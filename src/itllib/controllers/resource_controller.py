@@ -1,8 +1,11 @@
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+import datetime
+from typing import Any, Dict, Tuple, Type
 import traceback
+
+from pydantic import BaseModel
 
 from ..itl import Itl
 from ..clusters import BaseController, PendingOperation, ResourceKey
@@ -40,7 +43,16 @@ async def _create_resource_if_not_exists(
 RelayDict = Dict[ResourceKey, Tuple[ResourceKey, ResourceEvents, Any]]
 
 
+class LogSpec(BaseModel):
+    timestamp: str
+    loglevel: str
+    message: Any = None
+    source: Any
+
+
 class ResourceController:
+    LOGGER_CLS: Type[BaseModel] = LogSpec
+    LOG_STREAM = None
     _children: Dict[str, RelayDict] = defaultdict(
         lambda: defaultdict(lambda: (None, None, None))
     )
@@ -324,6 +336,24 @@ class ResourceController:
         else:
             for child_ref in child_refs:
                 asyncio.create_task(self.delete_child(parent_config, child_ref))
+
+    def log(self, loglevel=None, message=None, **kwargs):
+        if "timestamp" not in kwargs:
+            kwargs["timestamp"] = datetime.datetime.now().isoformat()
+        if "source" not in kwargs:
+            kwargs["source"] = {
+                "controller": f"{self.cluster}/{self.group or '*'}/{self.version or '*'}/{self.kind or '*'}/{self.name or '*'}/{self.fiber or '*'}",
+                "class": self.__class__.__name__,
+            }
+
+        message = self.LOGGER_CLS(
+            loglevel=loglevel, message=message, **kwargs
+        ).model_dump_json()
+
+        if self.LOG_STREAM:
+            self.itl.stream_post(self.LOG_STREAM, message)
+        else:
+            print(message)
 
 
 class CascadeChildController(ResourceController):

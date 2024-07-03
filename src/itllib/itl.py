@@ -742,9 +742,9 @@ class Itl:
                 if domain == target_domain:
                     return value
 
-    def stream_post(self, stream=None, message=None, group=None, url=None, client=None):
+    def stream_post(self, stream=None, message=None, url=None):
         if stream:
-            url = self._get_stream_uri(stream, group, operation="http")
+            url = self._get_stream_uri(stream, operation="http")
 
         if url == None:
             raise ValueError("No stream, loop/streamId, or url provided")

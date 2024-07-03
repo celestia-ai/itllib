@@ -1,5 +1,6 @@
 import asyncio
 from typing import Any, Dict, Type
+
 from pydantic import BaseModel
 from itllib.clusters import PendingOperation
 
@@ -10,7 +11,7 @@ class TrialSpec(BaseModel):
 
 
 class OptimizerMixin:
-    SYNC = False
+    SYNC = True
     TRIAL_FIBER = "trials"
     CONFIG_CLS: Type[BaseModel] = None
     TRIAL_CLS: Type[BaseModel] = TrialSpec
@@ -80,7 +81,7 @@ class FeedbackSpec(BaseModel):
 
 
 class ExperimenterMixin:
-    SYNC = False
+    SYNC = True
     FEEDBACK_FIBER = "feedback"
     CONFIG_CLS: Type[BaseModel] = None
     FEEDBACK_CLS: Type[BaseModel] = FeedbackSpec
